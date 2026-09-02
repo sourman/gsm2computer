@@ -1,11 +1,7 @@
 # NOTICE — lineage
 
-GSM2Computer is derived from Android GSM↔VoIP gateway code with this ancestry:
+GSM2Computer is derived from [pulpoff/gsm2sip](https://github.com/pulpoff/gsm2sip), the original Android GSM-SIP gateway (Magisk priv-app, SIP bridge, device mixer profiles).
 
-1. **Original project:** [pulpoff/gsm2sip](https://github.com/pulpoff/gsm2sip) — “Android based GSM-SIP gateway” (Magisk priv-app, SIP bridge, `gsm2sip` screenshots).
-2. **Intermediate fork:** [rmeehub/gsm-sip-gateway](https://github.com/rmeehub/gsm-sip-gateway) — same codebase, repo renamed; its GitHub description states it is a fork of `pulpoff/gsm2sip`.
-3. **Development fork:** [sourman/gsm-sip-gateway](https://github.com/sourman/gsm-sip-gateway) — GitHub fork of rmeehub; Pixel 7 audio work, OpenAI Realtime WebSocket transport, SignalWire test rig, etc.
+This repo takes that codebase’s WebSocket stream path and GSM audio plumbing, removes SIP/SignalWire/Twilio signalling, and retargets the product at streaming GSM calls to a hub computer.
 
-This repo (`gsm2computer`) takes the WebSocket stream path from that line of work, removes SIP/SignalWire/Twilio, and retargets the product at streaming GSM calls to a hub computer.
-
-**License:** Neither `pulpoff/gsm2sip` nor the intermediate forks ship an explicit `LICENSE` file on GitHub at the time of this fork. This project is released under the MIT License (see `LICENSE`). If upstream rights holders prefer different terms, resolve that with them before redistributing combined work.
+**License:** `pulpoff/gsm2sip` does not ship an explicit `LICENSE` file on GitHub at the time of this fork. This project is released under the MIT License (see `LICENSE`). If upstream rights holders prefer different terms, resolve that with them before redistributing combined work.
