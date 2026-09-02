@@ -1,0 +1,507 @@
+#!/usr/bin/env python3
+"""gsm2computer hub: μ-law WebSocket ↔ PipeWire gsm_bus + switchboard control."""
+from __future__ import annotations
+
+import asyncio
+import base64
+import hashlib
+import json
+import logging
+import os
+import re
+import signal
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Optional, Tuple
+
+HOST = os.environ.get("GSM2COMPUTER_HUB_HOST", "100.101.181.110")
+PORT = int(os.environ.get("GSM2COMPUTER_HUB_PORT", "8787"))
+HUB_DIR = Path(os.environ.get("GSM2COMPUTER_HUB_DIR", Path(__file__).resolve().parent))
+SWITCHBOARD = HUB_DIR / "switchboard.sh"
+GSM_SINK = os.environ.get("GSM2COMPUTER_GSM_SINK", "gsm_bus")
+GSM_MONITOR = os.environ.get("GSM2COMPUTER_GSM_MONITOR", "gsm_bus.monitor")
+AUDIO_RATE = int(os.environ.get("GSM2COMPUTER_AUDIO_RATE", "8000"))
+AUTO_MODE_ON_CALL = os.environ.get("GSM2COMPUTER_AUTO_MODE", "openclaw")
+RECORD_CHUNK = int(os.environ.get("GSM2COMPUTER_RECORD_CHUNK", "160"))
+
+LOG = logging.getLogger("gsm2computer-hub")
+WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+current_mode: Optional[str] = None
+active_bridge: Optional["PipewireBridge"] = None
+
+
+def json_response(status: int, body: dict, extra_headers: Optional[dict] = None) -> bytes:
+    payload = json.dumps(body).encode("utf-8")
+    status_text = {
+        200: "OK",
+        400: "Bad Request",
+        404: "Not Found",
+        409: "Conflict",
+        500: "Internal Server Error",
+    }.get(status, "")
+    lines = [
+        f"HTTP/1.1 {status} {status_text}".rstrip(),
+        "Content-Type: application/json",
+        f"Content-Length: {len(payload)}",
+        "Connection: close",
+    ]
+    if extra_headers:
+        for k, v in extra_headers.items():
+            lines.append(f"{k}: {v}")
+    lines.extend(["", ""])
+    return "\r\n".join(lines).encode("ascii") + payload
+
+
+async def read_http_request(reader: asyncio.StreamReader) -> Tuple[str, str, dict, bytes]:
+    header_lines: list[bytes] = []
+    while True:
+        line = await reader.readline()
+        if not line:
+            raise ConnectionError("client closed")
+        if line in (b"\r\n", b"\n"):
+            break
+        header_lines.append(line.rstrip(b"\r\n"))
+
+    if not header_lines:
+        raise ValueError("empty request")
+
+    request_line = header_lines[0].decode("iso-8859-1")
+    parts = request_line.split()
+    if len(parts) < 2:
+        raise ValueError(f"bad request line: {request_line!r}")
+    method, path = parts[0], parts[1]
+
+    headers: dict[str, str] = {}
+    for raw in header_lines[1:]:
+        if b":" not in raw:
+            continue
+        name, value = raw.split(b":", 1)
+        headers[name.decode("iso-8859-1").strip().lower()] = value.decode("iso-8859-1").strip()
+
+    body = b""
+    if method in ("POST", "PUT", "PATCH"):
+        length = int(headers.get("content-length", "0") or "0")
+        if length:
+            body = await reader.readexactly(length)
+
+    return method.upper(), path, headers, body
+
+
+def ws_accept_key(sec_key: str) -> str:
+    digest = hashlib.sha1((sec_key + WS_GUID).encode("ascii")).digest()
+    return base64.b64encode(digest).decode("ascii")
+
+
+async def ws_send_text(writer: asyncio.StreamWriter, text: str) -> None:
+    data = text.encode("utf-8")
+    length = len(data)
+    if length < 126:
+        header = bytes([0x81, length])
+    elif length < 65536:
+        header = bytes([0x81, 126]) + length.to_bytes(2, "big")
+    else:
+        header = bytes([0x81, 127]) + length.to_bytes(8, "big")
+    writer.write(header + data)
+    await writer.drain()
+
+
+async def ws_send_pong(writer: asyncio.StreamWriter, payload: bytes = b"") -> None:
+    length = len(payload)
+    header = bytes([0x8A, length])
+    writer.write(header + payload)
+    await writer.drain()
+
+
+async def ws_read_frame(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> Optional[str]:
+    try:
+        hdr = await reader.readexactly(2)
+    except asyncio.IncompleteReadError:
+        return None
+    opcode = hdr[0] & 0x0F
+    masked = bool(hdr[1] & 0x80)
+    length = hdr[1] & 0x7F
+    if length == 126:
+        length = int.from_bytes(await reader.readexactly(2), "big")
+    elif length == 127:
+        length = int.from_bytes(await reader.readexactly(8), "big")
+
+    mask = await reader.readexactly(4) if masked else None
+    payload = await reader.readexactly(length)
+    if masked and mask:
+        payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+
+    if opcode == 0x8:
+        return None
+    if opcode == 0x9:
+        await ws_send_pong(writer, payload)
+        return ""
+    if opcode == 0x1:
+        return payload.decode("utf-8", errors="replace")
+    return ""
+
+
+async def run_switchboard(*args: str) -> tuple[int, str, str]:
+    if not SWITCHBOARD.is_file():
+        return 1, "", f"missing switchboard script: {SWITCHBOARD}"
+    proc = await asyncio.create_subprocess_exec(
+        str(SWITCHBOARD),
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(HUB_DIR),
+    )
+    stdout_b, stderr_b = await proc.communicate()
+    return proc.returncode or 0, stdout_b.decode("utf-8", errors="replace"), stderr_b.decode("utf-8", errors="replace")
+
+
+async def parse_switchboard_links() -> list[dict[str, str]]:
+    proc = await asyncio.create_subprocess_exec(
+        "pw-link",
+        "-l",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout_b, _ = await proc.communicate()
+    links: list[dict[str, str]] = []
+    bus_re = re.compile(r"(gsm_bus|openclaw_bus|whatsapp_bus|telegram_bus)")
+    current_src: Optional[str] = None
+    for raw in stdout_b.decode("utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if "|->" in line:
+            if not bus_re.search(line):
+                continue
+            _, dst = [part.strip() for part in line.split("|->", 1)]
+            if current_src:
+                links.append({"from": current_src, "to": dst})
+            continue
+        if bus_re.search(line):
+            current_src = line
+    return links
+
+
+async def switchboard_state() -> dict:
+    rc, status_out, status_err = await run_switchboard("status")
+    links = await parse_switchboard_links()
+    return {
+        "ok": rc == 0,
+        "mode": current_mode,
+        "links": links,
+        "status_text": status_out.strip(),
+        "stderr": status_err.strip() or None,
+    }
+
+
+async def set_switchboard_mode(mode: str) -> dict:
+    global current_mode
+    allowed = {"clear", "openclaw", "conference", "status"}
+    if mode not in allowed:
+        return {"ok": False, "error": f"unknown mode {mode!r}", "allowed": sorted(allowed - {"status"})}
+    rc, out, err = await run_switchboard(mode)
+    if rc != 0:
+        return {"ok": False, "error": err or out or f"switchboard {mode} failed"}
+    if mode != "status":
+        current_mode = None if mode == "clear" else mode
+    state = await switchboard_state()
+    state["applied"] = mode
+    state["message"] = out.strip()
+    return state
+
+
+def parse_sms_command(body: str) -> Optional[str]:
+    text = (body or "").strip()
+    if not text:
+        return None
+    upper = text.upper()
+    if upper == "STATUS":
+        return "status"
+    match = re.match(r"^MODE\s+(\S+)", upper)
+    if match:
+        return match.group(1).lower()
+    return None
+
+
+class PipewireBridge:
+    def __init__(self, sink: str, monitor: str, rate: int) -> None:
+        self.sink = sink
+        self.monitor = monitor
+        self.rate = rate
+        self._playback: Optional[asyncio.subprocess.Process] = None
+        self._record: Optional[asyncio.subprocess.Process] = None
+        self._record_task: Optional[asyncio.Task] = None
+        self._closed = False
+
+    async def start(self, ws_writer: asyncio.StreamWriter) -> None:
+        self._playback = await asyncio.create_subprocess_exec(
+            "pw-cat",
+            "--playback",
+            "--target",
+            self.sink,
+            "--rate",
+            str(self.rate),
+            "--channels",
+            "1",
+            "--format",
+            "ulaw",
+            "-",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        self._record = await asyncio.create_subprocess_exec(
+            "pw-record",
+            "--target",
+            self.monitor,
+            "--rate",
+            str(self.rate),
+            "--channels",
+            "1",
+            "--format",
+            "ulaw",
+            "-",
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        self._record_task = asyncio.create_task(self._pump_out(ws_writer))
+        LOG.info("pipewire bridge started sink=%s monitor=%s", self.sink, self.monitor)
+
+    async def _pump_out(self, ws_writer: asyncio.StreamWriter) -> None:
+        assert self._record and self._record.stdout
+        while not self._closed:
+            try:
+                chunk = await self._record.stdout.read(RECORD_CHUNK)
+            except Exception as exc:
+                LOG.warning("record read failed: %s", exc)
+                break
+            if not chunk:
+                break
+            event = {
+                "type": "response.output_audio.delta",
+                "delta": base64.b64encode(chunk).decode("ascii"),
+            }
+            try:
+                await ws_send_text(ws_writer, json.dumps(event))
+            except (ConnectionError, BrokenPipeError, asyncio.IncompleteReadError):
+                break
+
+    async def write_in(self, ulaw: bytes) -> None:
+        if self._closed or not ulaw:
+            return
+        proc = self._playback
+        if not proc or not proc.stdin:
+            return
+        proc.stdin.write(ulaw)
+        await proc.stdin.drain()
+
+    async def stop(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._record_task:
+            self._record_task.cancel()
+            try:
+                await self._record_task
+            except asyncio.CancelledError:
+                pass
+        for proc in (self._playback, self._record):
+            if not proc:
+                continue
+            if proc.stdin:
+                proc.stdin.close()
+            if proc.returncode is None:
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=2)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+            if proc.stderr:
+                err = await proc.stderr.read()
+                if err:
+                    LOG.debug("pipewire stderr: %s", err.decode("utf-8", errors="replace").strip())
+
+
+async def handle_websocket(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    headers: dict,
+    path: str,
+) -> None:
+    global active_bridge
+
+    key = headers.get("sec-websocket-key")
+    if not key:
+        writer.write(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+        return
+
+    if active_bridge is not None:
+        writer.write(b"HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+        return
+
+    accept = ws_accept_key(key)
+    response = (
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        f"Sec-WebSocket-Accept: {accept}\r\n"
+        "\r\n"
+    )
+    writer.write(response.encode("ascii"))
+    await writer.drain()
+
+    LOG.info("WebSocket connected path=%s", path)
+    if AUTO_MODE_ON_CALL:
+        result = await set_switchboard_mode(AUTO_MODE_ON_CALL)
+        LOG.info("auto mode on call: %s", result.get("applied") or result.get("error"))
+
+    bridge = PipewireBridge(GSM_SINK, GSM_MONITOR, AUDIO_RATE)
+    active_bridge = bridge
+    try:
+        await bridge.start(writer)
+        session_ack = {
+            "type": "session.updated",
+            "session": {
+                "id": f"hub-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
+                "model": "gsm2computer-hub",
+                "audio": {"format": "audio/pcmu", "rate": AUDIO_RATE},
+            },
+        }
+        await ws_send_text(writer, json.dumps(session_ack))
+
+        while True:
+            msg = await ws_read_frame(reader, writer)
+            if msg is None:
+                break
+            if not msg:
+                continue
+            try:
+                event = json.loads(msg)
+            except json.JSONDecodeError:
+                LOG.debug("non-json ws frame: %r", msg[:200])
+                continue
+
+            etype = event.get("type")
+            if etype == "input_audio_buffer.append":
+                audio_b64 = event.get("audio") or event.get("data") or ""
+                if audio_b64:
+                    await bridge.write_in(base64.b64decode(audio_b64, validate=False))
+            else:
+                LOG.debug("ws event type=%s", etype)
+    finally:
+        await bridge.stop()
+        active_bridge = None
+        LOG.info("WebSocket disconnected")
+
+
+async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    peer = writer.get_extra_info("peername")
+    try:
+        method, path, headers, body = await read_http_request(reader)
+    except (ConnectionError, ValueError, asyncio.IncompleteReadError) as exc:
+        LOG.debug("bad request from %s: %s", peer, exc)
+        writer.close()
+        await writer.wait_closed()
+        return
+
+    LOG.debug("%s %s from %s", method, path, peer)
+
+    if headers.get("upgrade", "").lower() == "websocket" or "sec-websocket-key" in headers:
+        await handle_websocket(reader, writer, headers, path)
+        writer.close()
+        await writer.wait_closed()
+        return
+
+    try:
+        if method == "GET" and path == "/health":
+            writer.write(json_response(200, {"ok": True, "mode": current_mode}))
+        elif method == "POST" and path == "/token":
+            expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
+            writer.write(
+                json_response(
+                    200,
+                    {"value": "hub-token", "model": "hub", "expires_at": expires},
+                )
+            )
+        elif method == "GET" and path == "/switchboard/state":
+            writer.write(json_response(200, await switchboard_state()))
+        elif method == "POST" and path == "/switchboard/mode":
+            try:
+                payload = json.loads(body.decode("utf-8") if body else "{}")
+            except json.JSONDecodeError:
+                writer.write(json_response(400, {"ok": False, "error": "invalid json"}))
+                await writer.drain()
+                writer.close()
+                await writer.wait_closed()
+                return
+            mode = str(payload.get("mode", "")).strip().lower()
+            if not mode:
+                writer.write(json_response(400, {"ok": False, "error": "mode required"}))
+            else:
+                writer.write(json_response(200, await set_switchboard_mode(mode)))
+        elif method == "POST" and path == "/sms":
+            try:
+                payload = json.loads(body.decode("utf-8") if body else "{}")
+            except json.JSONDecodeError:
+                payload = {"raw": body.decode("utf-8", errors="replace")}
+            log_entry = {
+                "from": payload.get("from"),
+                "body": payload.get("body"),
+                "receivedAt": payload.get("receivedAt")
+                or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+            LOG.info("sms %s", json.dumps(log_entry, ensure_ascii=False))
+            command = parse_sms_command(str(payload.get("body") or ""))
+            if command:
+                result = await set_switchboard_mode(command)
+                writer.write(json_response(200, {"ok": True, "sms": log_entry, "routing": result}))
+            else:
+                writer.write(json_response(200, {"ok": True, "sms": log_entry}))
+        else:
+            writer.write(json_response(404, {"ok": False, "error": "not found"}))
+    except Exception:
+        LOG.exception("handler error for %s %s", method, path)
+        writer.write(json_response(500, {"ok": False, "error": "internal error"}))
+
+    await writer.drain()
+    writer.close()
+    await writer.wait_closed()
+
+
+async def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown()))
+
+    server = await asyncio.start_server(handle_client, HOST, PORT)
+    addrs = ", ".join(str(sock.getsockname()) for sock in server.sockets or [])
+    LOG.info("listening on %s (sink=%s auto_mode=%s)", addrs, GSM_SINK, AUTO_MODE_ON_CALL or "off")
+    async with server:
+        await server.serve_forever()
+
+
+_server: Optional[asyncio.AbstractServer] = None
+
+
+async def shutdown() -> None:
+    global active_bridge
+    LOG.info("shutting down")
+    if active_bridge:
+        await active_bridge.stop()
+        active_bridge = None
+    raise SystemExit(0)
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        pass
