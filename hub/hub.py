@@ -20,8 +20,17 @@ HUB_DIR = Path(os.environ.get("GSM2COMPUTER_HUB_DIR", Path(__file__).resolve().p
 SWITCHBOARD = HUB_DIR / "switchboard.sh"
 GSM_SINK = os.environ.get("GSM2COMPUTER_GSM_SINK", "gsm_bus")
 GSM_MONITOR = os.environ.get("GSM2COMPUTER_GSM_MONITOR", "gsm_bus.monitor")
+OPENCLAW_DOWNLINK_MONITOR = os.environ.get(
+    "GSM2COMPUTER_OPENCLAW_DOWNLINK_MONITOR", "openclaw_bus.monitor"
+)
 AUDIO_RATE = int(os.environ.get("GSM2COMPUTER_AUDIO_RATE", "8000"))
 AUTO_MODE_ON_CALL = os.environ.get("GSM2COMPUTER_AUTO_MODE", "openclaw")
+OPENCLAW_TALK_ON_CALL = os.environ.get("GSM2COMPUTER_OPENCLAW_TALK", "1").lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
 RECORD_CHUNK = int(os.environ.get("GSM2COMPUTER_RECORD_CHUNK", "160"))
 
 LOG = logging.getLogger("gsm2computer-hub")
@@ -29,6 +38,12 @@ WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 current_mode: Optional[str] = None
 active_bridge: Optional["PipewireBridge"] = None
+active_openclaw: Optional["OpenClawTalkBridge"] = None
+
+try:
+    from openclaw_talk_bridge import OpenClawTalkBridge
+except ImportError:
+    OpenClawTalkBridge = None  # type: ignore[misc, assignment]
 
 
 def json_response(status: int, body: dict, extra_headers: Optional[dict] = None) -> bytes:
@@ -233,7 +248,8 @@ class PipewireBridge:
         self._record_task: Optional[asyncio.Task] = None
         self._closed = False
 
-    async def start(self, ws_writer: asyncio.StreamWriter) -> None:
+    async def start(self, ws_writer: asyncio.StreamWriter, monitor: Optional[str] = None) -> None:
+        record_target = monitor or self.monitor
         self._playback = await asyncio.create_subprocess_exec(
             "pw-cat",
             "--playback",
@@ -253,7 +269,7 @@ class PipewireBridge:
         self._record = await asyncio.create_subprocess_exec(
             "pw-record",
             "--target",
-            self.monitor,
+            record_target,
             "--rate",
             str(self.rate),
             "--channels",
@@ -266,7 +282,7 @@ class PipewireBridge:
             stderr=asyncio.subprocess.PIPE,
         )
         self._record_task = asyncio.create_task(self._pump_out(ws_writer))
-        LOG.info("pipewire bridge started sink=%s monitor=%s", self.sink, self.monitor)
+        LOG.info("pipewire bridge started sink=%s monitor=%s", self.sink, record_target)
 
     async def _pump_out(self, ws_writer: asyncio.StreamWriter) -> None:
         assert self._record and self._record.stdout
@@ -330,7 +346,7 @@ async def handle_websocket(
     headers: dict,
     path: str,
 ) -> None:
-    global active_bridge
+    global active_bridge, active_openclaw
 
     key = headers.get("sec-websocket-key")
     if not key:
@@ -361,8 +377,18 @@ async def handle_websocket(
 
     bridge = PipewireBridge(GSM_SINK, GSM_MONITOR, AUDIO_RATE)
     active_bridge = bridge
+    openclaw_bridge: Optional[OpenClawTalkBridge] = None
+    downlink_monitor = OPENCLAW_DOWNLINK_MONITOR if OPENCLAW_TALK_ON_CALL else GSM_MONITOR
+    if OPENCLAW_TALK_ON_CALL and OpenClawTalkBridge is not None:
+        try:
+            openclaw_bridge = OpenClawTalkBridge(mic_source="hub")
+            await openclaw_bridge.start()
+            active_openclaw = openclaw_bridge
+            LOG.info("openclaw talk bridge started for call")
+        except Exception as exc:
+            LOG.error("openclaw talk bridge failed to start: %s", exc)
     try:
-        await bridge.start(writer)
+        await bridge.start(writer, monitor=downlink_monitor)
         session_ack = {
             "type": "session.updated",
             "session": {
@@ -389,12 +415,19 @@ async def handle_websocket(
             if etype == "input_audio_buffer.append":
                 audio_b64 = event.get("audio") or event.get("data") or ""
                 if audio_b64:
-                    await bridge.write_in(base64.b64decode(audio_b64, validate=False))
+                    ulaw = base64.b64decode(audio_b64, validate=False)
+                    await bridge.write_in(ulaw)
+                    if openclaw_bridge is not None:
+                        openclaw_bridge.feed_gsm_ulaw(ulaw)
             else:
                 LOG.debug("ws event type=%s", etype)
     finally:
         await bridge.stop()
         active_bridge = None
+        if openclaw_bridge is not None:
+            await openclaw_bridge.stop()
+            active_openclaw = None
+            LOG.info("openclaw talk bridge stopped")
         LOG.info("WebSocket disconnected")
 
 
@@ -483,7 +516,13 @@ async def main() -> None:
 
     server = await asyncio.start_server(handle_client, HOST, PORT)
     addrs = ", ".join(str(sock.getsockname()) for sock in server.sockets or [])
-    LOG.info("listening on %s (sink=%s auto_mode=%s)", addrs, GSM_SINK, AUTO_MODE_ON_CALL or "off")
+    LOG.info(
+        "listening on %s (sink=%s auto_mode=%s openclaw_talk=%s)",
+        addrs,
+        GSM_SINK,
+        AUTO_MODE_ON_CALL or "off",
+        "on" if OPENCLAW_TALK_ON_CALL else "off",
+    )
     async with server:
         await server.serve_forever()
 
@@ -492,8 +531,11 @@ _server: Optional[asyncio.AbstractServer] = None
 
 
 async def shutdown() -> None:
-    global active_bridge
+    global active_bridge, active_openclaw
     LOG.info("shutting down")
+    if active_openclaw:
+        await active_openclaw.stop()
+        active_openclaw = None
     if active_bridge:
         await active_bridge.stop()
         active_bridge = None

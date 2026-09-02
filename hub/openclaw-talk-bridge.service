@@ -1,0 +1,15 @@
+[Unit]
+Description=gsm2computer OpenClaw talk bridge (openclaw_bus ↔ gateway-relay)
+After=network-online.target pipewire.service gsm2computer-audio-bus.service
+Wants=gsm2computer-audio-bus.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/gsm2computer-hub
+ExecStart=/usr/bin/python3 %h/gsm2computer-hub/openclaw_talk_bridge.py
+Environment=OPENCLAW_GATEWAY_URL=ws://127.0.0.1:18789
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -10,6 +10,7 @@ ExecStart=/usr/bin/python3 %h/gsm2computer-hub/hub.py
 Environment=GSM2COMPUTER_HUB_HOST=100.101.181.110
 Environment=GSM2COMPUTER_HUB_PORT=8787
 Environment=GSM2COMPUTER_AUTO_MODE=openclaw
+Environment=GSM2COMPUTER_OPENCLAW_TALK=1
 Restart=on-failure
 RestartSec=3
 

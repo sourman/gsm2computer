@@ -26,9 +26,8 @@ case "${1:-status}" in
   clear) unlink_all ;;
   openclaw)
     unlink_all
-    link_stereo gsm_bus openclaw_bus
     link_stereo openclaw_bus gsm_bus
-    echo "mode: gsm <-> openclaw"
+    echo "mode: gsm uplink (hub) + openclaw downlink -> gsm"
     ;;
   conference)
     unlink_all
