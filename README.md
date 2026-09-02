@@ -23,7 +23,7 @@ The optional `hub-token-worker/` Cloudflare Worker mints short-lived stream toke
 
 ## Lineage
 
-Forked from [rmeehub/gsm-sip-gateway](https://github.com/rmeehub/gsm-sip-gateway). SIP signalling, SignalWire tooling, and Twilio test rig were removed. See `NOTICE`.
+Derived from the [pulpoff/gsm2sip](https://github.com/pulpoff/gsm2sip) project (the original Android GSM-SIP gateway), via [rmeehub/gsm-sip-gateway](https://github.com/rmeehub/gsm-sip-gateway) and [sourman/gsm-sip-gateway](https://github.com/sourman/gsm-sip-gateway). SIP signalling, SignalWire tooling, and Twilio test rig were removed in this fork. See `NOTICE`.
 
 Licensed under MIT — see `LICENSE`.
 
