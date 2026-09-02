@@ -61,6 +61,7 @@ class BootReceiver : BroadcastReceiver() {
                     "appops set $pkg AUTO_REVOKE_PERMISSIONS_IF_UNUSED ignore 2>&1; " else ""
                 RootShell.execForOutput(
                     "pm grant $pkg android.permission.RECORD_AUDIO 2>&1; " +
+                        "pm grant $pkg android.permission.RECEIVE_SMS 2>&1; " +
                         autoRevoke +
                         "appops set ${uidFlag}$pkg RECORD_AUDIO allow 2>&1; " +
                         "appops set $pkg RECORD_AUDIO allow 2>&1"

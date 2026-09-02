@@ -356,7 +356,7 @@ class MainActivity : AppCompatActivity(), GatewayHost {
         if (!wasRunning) {
             running = true
             vm.setGatewayRunning(running)
-            vm.appendLog("Auto-starting bridge → ${cfg.streamTokenUrl}")
+            vm.appendLog("Auto-starting bridge → ${cfg.hubControlUrl.ifBlank { cfg.streamTokenUrl }}")
         } else {
             vm.appendLog("Re-launching bridge from foreground (mic capability)")
         }
@@ -632,7 +632,8 @@ class MainActivity : AppCompatActivity(), GatewayHost {
             Manifest.permission.CALL_PHONE,
             Manifest.permission.ANSWER_PHONE_CALLS,
             Manifest.permission.READ_CALL_LOG,
-            Manifest.permission.ACCESS_FINE_LOCATION
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.RECEIVE_SMS,
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             perms.add(Manifest.permission.READ_PHONE_NUMBERS)

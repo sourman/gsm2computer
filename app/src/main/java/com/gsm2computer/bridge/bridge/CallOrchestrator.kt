@@ -5,6 +5,7 @@ import android.os.Build
 import android.telecom.Call
 import android.util.Log
 import com.gsm2computer.bridge.BridgeConfig
+import com.gsm2computer.bridge.HubEndpoints
 import com.gsm2computer.bridge.RootShell
 import com.gsm2computer.bridge.audio.MicIsolationGuard
 import com.gsm2computer.bridge.gsm.GsmCallManager
@@ -138,15 +139,21 @@ class CallOrchestrator(
 
     private fun startStreamBridge() {
         val cfg = resolveConfig()
-        Log.i(TAG, "Opening hub stream (model=${cfg.streamModel} voice=${cfg.streamVoice})")
+        Log.i(
+            TAG,
+            "Opening hub stream (hub=${cfg.hubControlUrl} token=${cfg.streamTokenUrl} " +
+                "model=${cfg.streamModel} voice=${cfg.streamVoice} hubOwned=${cfg.hubOwnedSession})",
+        )
         bridgeState = BridgeState.CONNECTING
         listener?.onStateChanged(bridgeState, "Connecting to hub")
 
         val transport = HubStreamClient(
             tokenUrl = cfg.streamTokenUrl,
+            webSocketUrl = HubEndpoints.webSocketUrl(cfg.hubControlUrl),
             model = cfg.streamModel,
             voice = cfg.streamVoice,
             instructions = HubStreamClient.DEFAULT_INSTRUCTIONS,
+            hubOwnedSession = cfg.hubOwnedSession,
         )
         startAudioPump(RtpPacket.PT_PCMU, transport)
 

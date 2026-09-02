@@ -2,6 +2,7 @@ package com.gsm2computer.bridge.realtime
 
 import android.util.Base64
 import android.util.Log
+import com.gsm2computer.bridge.HubEndpoints
 import com.gsm2computer.bridge.rtp.MediaTransport
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -13,31 +14,23 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
- * OpenAI Realtime WebSocket transport (GA API, 2026).
+ * μ-law WebSocket transport for the GSM bridge.
  *
- * Connects the gateway's caller audio directly to OpenAI Realtime over a
- * WebSocket — no SIP, no Twilio, no SignalWire, no call_id handshake. The
- * telephony-native g711_ulaw (8 kHz μ-law) audio format is used in both
- * directions, matching the gateway's existing PCMU path, so no resampling is
- * involved.
+ * OpenAI Realtime (GA): ephemeral token + `wss://api.openai.com/v1/realtime`,
+ * `session.update`, and an initial `response.create` greeting.
  *
- * Auth: the device never holds the real API key. It fetches a short-lived
- * ephemeral client secret (`ek_...`) from the bridge-worker `/token` endpoint,
- * then authenticates the WebSocket with `Authorization: Bearer <ek_...>`.
- * (Both the ephemeral-over-WS and header-auth paths are verified working.)
- *
- * Protocol (confirmed against a live round-trip):
- *   → session.update  { audio.input.format={type:"audio/pcmu"}, turn_detection:server_vad,
- *                        audio.output.format={type:"audio/pcmu"}, voice }
- *   → input_audio_buffer.append { audio: base64(μ-law) }   (streamed, server VAD auto-commits)
- *   ← response.output_audio.delta { delta: base64(μ-law) }  (agent speech back)
- *   ← input_audio_buffer.speech_started                     (caller barge-in → flush playback)
+ * Custom hub: token from `{hub}/token`, WebSocket upgrade on the same host.
+ * Session instructions and the opening greeting are hub-owned — the phone
+ * still speaks the μ-law event protocol (`input_audio_buffer.append` /
+ * `response.output_audio.delta`) so the hub can translate onto its audio bus.
  */
 class HubStreamClient(
     private val tokenUrl: String,
+    private val webSocketUrl: String,
     private val model: String,
     private val voice: String,
     private val instructions: String,
+    private val hubOwnedSession: Boolean = false,
 ) : MediaTransport {
 
     private val http = OkHttpClient.Builder()
@@ -52,13 +45,12 @@ class HubStreamClient(
 
     override fun start(sink: MediaTransport.Sink) {
         this.sink = sink
-        // Token fetch is a blocking network call — run off the caller's thread.
-        Thread({ connect(sink) }, "OpenAI-WS-Connect").start()
+        Thread({ connect(sink) }, "Hub-WS-Connect").start()
     }
 
     // Model actually used for the WS connect — the one the token was minted for
     // (returned by /token), which may differ from the configured default. The
-    // ephemeral session's model and the ?model= param must agree.
+    // ephemeral session's model and the ?model= param must agree (OpenAI path).
     @Volatile private var connectModel = model
 
     private fun connect(sink: MediaTransport.Sink) {
@@ -69,9 +61,9 @@ class HubStreamClient(
             return
         }
         if (closed) return
-        Log.i(TAG, "Minted ephemeral token ${token.take(8)}…, opening WS (model=$connectModel voice=$voice)")
+        Log.i(TAG, "Minted ephemeral token ${token.take(8)}…, opening WS (model=$connectModel voice=$voice hubOwned=$hubOwnedSession)")
 
-        val url = "$WS_BASE?model=$connectModel"
+        val url = HubEndpoints.connectUrl(webSocketUrl, connectModel, hubOwnedSession)
         val request = Request.Builder()
             .url(url)
             .addHeader("Authorization", "Bearer $token")
@@ -79,9 +71,14 @@ class HubStreamClient(
 
         ws = http.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                Log.i(TAG, "WS OPEN — sending session.update")
-                sink.onStatus("OpenAI WS connected ($voice)")
-                webSocket.send(sessionUpdateJson())
+                if (hubOwnedSession) {
+                    Log.i(TAG, "WS OPEN — hub owns session (skip session.update / greeting)")
+                    sink.onStatus("Hub WS connected")
+                } else {
+                    Log.i(TAG, "WS OPEN — sending session.update")
+                    sink.onStatus("OpenAI WS connected ($voice)")
+                    webSocket.send(sessionUpdateJson())
+                }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -92,17 +89,17 @@ class HubStreamClient(
                 if (closed) return
                 val code = response?.code ?: -1
                 Log.e(TAG, "WS failure code=$code: ${t.message}")
-                sink.onError("OpenAI WS failure (code=$code): ${t.message}")
+                sink.onError("Hub WS failure (code=$code): ${t.message}")
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 Log.i(TAG, "WS CLOSED code=$code reason=$reason")
-                if (!closed) sink.onError("OpenAI WS closed ($code $reason)")
+                if (!closed) sink.onError("Hub WS closed ($code $reason)")
             }
         })
     }
 
-    /** POST bridge-worker /token → { value: "ek_...", model: "...", ... }. */
+    /** POST /token → { value: "ek_...", model: "...", ... }. */
     private fun fetchEphemeralToken(): String {
         val req = Request.Builder()
             .url(tokenUrl)
@@ -114,8 +111,6 @@ class HubStreamClient(
             val json = JSONObject(body)
             val value = json.optString("value")
             if (value.isBlank()) throw RuntimeException("no token in response: ${body.take(200)}")
-            // Connect with the model the token was minted for, so the WS ?model=
-            // matches the ephemeral session's model.
             json.optString("model").takeIf { it.isNotBlank() }?.let { connectModel = it }
             return value
         }
@@ -128,7 +123,6 @@ class HubStreamClient(
             return
         }
         when {
-            // GA event: agent audio back, base64 μ-law in "delta".
             type == "response.output_audio.delta" -> {
                 val b64 = JSONObject(text).optString("delta")
                 if (b64.isNotEmpty()) {
@@ -139,20 +133,18 @@ class HubStreamClient(
                     }
                 }
             }
-            // Caller started speaking — drop queued agent audio (barge-in).
             type == "input_audio_buffer.speech_started" -> sink.onFlushPlayback()
             type == "session.updated" -> {
                 Log.i(TAG, "session.updated — μ-law + server_vad active")
-                sink.onStatus("OpenAI session ready")
-                // Greet first: the caller is silent (listening), so server VAD
-                // won't trigger a turn. Kick off an initial response so the
-                // caller hears the agent immediately; VAD handles later turns.
-                ws?.send(JSONObject().put("type", "response.create").toString())
+                sink.onStatus("Hub session ready")
+                if (!hubOwnedSession) {
+                    ws?.send(JSONObject().put("type", "response.create").toString())
+                }
             }
             type == "error" -> {
                 val err = JSONObject(text).optJSONObject("error")?.toString() ?: text
                 Log.e(TAG, "WS error event: ${err.take(300)}")
-                sink.onStatus("OpenAI error: ${err.take(160)}")
+                sink.onStatus("Hub error: ${err.take(160)}")
             }
             type == "response.output_audio_transcript.done" -> {
                 val t = JSONObject(text).optString("transcript")
@@ -179,9 +171,8 @@ class HubStreamClient(
     }
 
     /**
-     * GA session config: μ-law both ways, Marin voice, server VAD (which
-     * auto-commits and triggers responses — the client never sends
-     * input_audio_buffer.commit / response.create manually).
+     * GA session config: μ-law both ways, configured voice, server VAD.
+     * Only used on the OpenAI path; a custom hub owns instructions/greeting.
      */
     private fun sessionUpdateJson(): String {
         val inputFmt = JSONObject().put("type", "audio/pcmu")
@@ -204,7 +195,6 @@ class HubStreamClient(
 
     companion object {
         private const val TAG = "HubStream"
-        private const val WS_BASE = "wss://api.openai.com/v1/realtime"
 
         const val DEFAULT_INSTRUCTIONS =
             "You are a friendly voice assistant on a phone call bridged from a " +

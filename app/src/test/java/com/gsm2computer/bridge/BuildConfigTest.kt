@@ -38,4 +38,12 @@ class BuildConfigTest {
             gradleScript.contains("signingConfig = signingConfigs.getByName(\"release\")"),
         )
     }
+
+    @Test
+    fun defaultHubControlUrlPointsAtTailscaleHub() {
+        assertTrue(
+            "DEFAULT_HUB_CONTROL_URL must point at the Tailscale hub",
+            gradleScript.contains("http://100.101.181.110:8787"),
+        )
+    }
 }

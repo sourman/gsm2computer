@@ -25,7 +25,10 @@ android {
         versionCode = 1
         versionName = "0.1.0"
 
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
         buildConfigField("boolean", "DEFAULT_STREAM_ENABLED", "true")
+        buildConfigField("String", "DEFAULT_HUB_CONTROL_URL", "\"http://100.101.181.110:8787\"")
         buildConfigField("String", "DEFAULT_STREAM_TOKEN_URL", "\"\"")
         buildConfigField("String", "DEFAULT_STREAM_MODEL", "\"gpt-realtime\"")
         buildConfigField("String", "DEFAULT_STREAM_VOICE", "\"marin\"")
@@ -73,4 +76,6 @@ dependencies {
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test.ext:junit:1.1.5")
+    androidTestImplementation("androidx.test:runner:1.5.2")
 }

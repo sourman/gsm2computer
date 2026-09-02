@@ -99,7 +99,7 @@ class GatewayService : Service() {
 
         val cfg = BridgeConfig.resolve(BridgeConfig.openPrefs(this))
         if (!cfg.streamEnabled) {
-            broadcastLog("ERROR: Hub stream URL not configured")
+            broadcastLog("ERROR: Hub control URL not configured")
             broadcastStatus("ERROR", "Missing hub URL")
             stopSelf()
             return
@@ -196,7 +196,8 @@ class GatewayService : Service() {
         orchestrator = orch
         GsmCallManager.logCallback = { msg -> broadcastLog("AUDIO: $msg") }
         orch.start()
-        broadcastLog("[v${BuildConfig.VERSION_NAME}] Bridge ready → ${cfg.streamTokenUrl}")
+        val dest = cfg.hubControlUrl.ifBlank { cfg.streamTokenUrl }
+        broadcastLog("[v${BuildConfig.VERSION_NAME}] Bridge ready → $dest")
         broadcastStatus("IDLE", "Ready for calls")
     }
 
@@ -293,16 +294,7 @@ class GatewayService : Service() {
     }
 
     private fun broadcastLog(msg: String) {
-        synchronized(logBuffer) {
-            logBuffer.add(msg)
-            if (logBuffer.size > LOG_BUFFER_SIZE) logBuffer.removeAt(0)
-        }
-        sendBroadcast(
-            Intent(LOG_ACTION).apply {
-                setPackage(packageName)
-                putExtra("msg", msg)
-            }
-        )
+        appendLog(this, msg)
     }
 
     private fun forceAllowRecordAudio() {
@@ -336,6 +328,20 @@ class GatewayService : Service() {
 
         fun drainLogBuffer(): List<String> = synchronized(logBuffer) {
             logBuffer.toList().also { logBuffer.clear() }
+        }
+
+        /** Append to the in-app log from anywhere (SMS forwarder, etc.). */
+        fun appendLog(context: Context, msg: String) {
+            synchronized(logBuffer) {
+                logBuffer.add(msg)
+                if (logBuffer.size > LOG_BUFFER_SIZE) logBuffer.removeAt(0)
+            }
+            context.sendBroadcast(
+                Intent(LOG_ACTION).apply {
+                    setPackage(context.packageName)
+                    putExtra("msg", msg)
+                }
+            )
         }
 
         const val CHANNEL_ID = "gsm2computer_channel"

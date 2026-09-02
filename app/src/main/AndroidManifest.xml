@@ -51,6 +51,9 @@
     <!-- Disable battery optimization (user grants manually) -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- SMS ingest (forwarded to hub; phone does not parse commands) -->
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+
     <application
         android:name=".GatewayApp"
         android:allowBackup="false"
@@ -59,6 +62,7 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.Gsm2ComputerBridge"
+        android:usesCleartextTraffic="true"
         tools:targetApi="34">
 
         <activity
@@ -121,6 +125,16 @@
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- SMS → hub control API. System-only sender via BROADCAST_SMS. -->
+        <receiver
+            android:name=".sms.SmsReceiver"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter android:priority="999">
+                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
             </intent-filter>
         </receiver>
 

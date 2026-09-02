@@ -1,25 +1,34 @@
 # GSM2Computer
 
-Turn a rooted Android phone with a SIM into a **GSM audio bridge**. When someone calls the phone, the app captures the call audio and streams it to a **hub machine on the internet** over WebSocket. The hub (not implemented here yet) can route that audio to WhatsApp Web, AI agents, or anything else you run on a desktop/server.
+A **phone-only computer** setup: you call your machine and talk to it. No SSH, no remote desktop, no browser UI — the phone call is the only interface.
 
-No SSH required for callers — they just dial the phone number.
+The computer runs headless on the internet. A rooted Android phone with a SIM acts as the GSM audio bridge: when you dial it, call audio streams to the hub over WebSocket and hub audio streams back. Everything you do with the computer — agents, automation, messaging, whatever runs on the box — happens through that voice link.
 
-## Architecture (v0.1)
+## Vision
 
 ```
-Caller ──GSM──► Bridge phone (this app) ──WebSocket/μ-law──► Hub computer
-                     ▲                           │
-                     └──── agent audio ──────────┘
+You ──GSM call──► Bridge phone ──WebSocket/μ-law──► Your computer (hub)
+                      ▲                                    │
+                      └──────── voice responses ───────────┘
 ```
 
-The Android side:
+- **Phone-only access** — the owner has zero direct access to the computer except via phone calls.
+- **Headless hub** — the machine does the work; you never log in remotely.
+- **Dial to interact** — no apps, VPNs, or terminals on your daily driver; just call the number.
+
+This repo is the bridge half of that stack today. The computer-side hub (voice agent, routing, session handling) is planned here as the other half.
+
+## What exists today (v0.1)
+
+The Android bridge:
 
 - Answers GSM calls as the default phone app
 - Captures caller audio via privileged `AudioRecord` (Magisk system priv-app)
-- Opens a WebSocket to your hub's token endpoint
+- Opens a μ-law WebSocket to the hub (Tailscale default `http://100.101.181.110:8787`)
 - Injects hub audio back into the GSM uplink
+- Forwards inbound SMS as JSON to `{hub}/sms` (phone does not parse commands)
 
-The optional `hub-token-worker/` Cloudflare Worker mints short-lived stream tokens so the phone never holds your real API key. Replace it with your own hub server when ready.
+The optional `hub-token-worker/` Cloudflare Worker mints short-lived stream tokens so the phone never holds your real API key. The full hub server — the brain of the phone-only computer — is not implemented yet. Protocol for v0.1 is **WebSocket with μ-law audio** (proven on Pixel 7 in upstream). RTP/UDP may follow for restrictive networks.
 
 ## Lineage
 
@@ -32,7 +41,7 @@ Licensed under MIT — see `LICENSE`.
 - Rooted Android phone (Magisk) with an unlockable bootloader
 - SIM with voice service
 - Set as **default phone app**
-- Hub stream URL configured (Settings → hub token URL, or `scripts/configure-bridge.sh`)
+- Hub stream URL configured (Settings → hub control URL, or `scripts/configure-bridge.sh`). Default: `http://100.101.181.110:8787` on Tailscale.
 
 Tested device profiles from upstream: Pixel 7, Samsung S10e, Qualcomm generic, etc.
 
@@ -44,18 +53,27 @@ sudo ./setup.sh          # once: JDK + Android SDK
 ./deploy.sh --reboot     # first install (Magisk module + priv-app)
 ```
 
-Configure the hub URL on-device or via adb:
+Configure the hub URL on-device or via adb (defaults to the Tailscale hub):
 
 ```bash
-STREAM_TOKEN_URL=https://your-hub.example/token \
+HUB_CONTROL_URL=http://100.101.181.110:8787 \
   ./scripts/configure-bridge.sh --force -s <serial>
 ```
 
+`STREAM_TOKEN_URL` is optional and defaults to `{HUB_CONTROL_URL}/token`. OpenAI `STREAM_MODEL` / `STREAM_VOICE` are unused in hub mode.
+
 Then open the app once (or let boot autostart) so the foreground-service mic capability is established.
 
-## Hub server (future)
+## SMS forwarder
 
-This repo ships only the **phone bridge**. The computer-side hub — accepting the stream, bridging to WhatsApp Web, mixing AI — is planned separately. Protocol choice for v0.1 is **WebSocket with μ-law audio** (same path proven on Pixel 7 in upstream). RTP/UDP may follow for resilience in restrictive networks.
+Inbound SMS is posted as `{from, body, receivedAt}` to `{HUB_CONTROL_URL}/sms`. The phone does not parse commands; the hub does.
+
+Manual test:
+
+1. Hub control URL set (default `http://100.101.181.110:8787`). Magisk grants `RECEIVE_SMS` on boot.
+2. Send an SMS to the gateway SIM (or emulator: `adb emu sms send +15551212 hello`).
+3. App log should show `SMS forwarded from …` or `SMS forward failed: …`.
+4. On the hub, confirm `POST /sms` received the JSON. Hub `/health` should already be up (SAF-15).
 
 ## Development
 

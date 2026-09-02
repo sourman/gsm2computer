@@ -3,16 +3,14 @@ package com.gsm2computer.bridge
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Instrumentation test placeholder. The heavy testable components (RTP packet
- * codec, G.722, PCMA, SIP auth, STUN parser) are covered by unit tests under
- * app/src/test/ because they don't need an Android instrumentation context.
+ * Instrumentation smoke: package identity plus default hub wiring.
  *
- * Add androidTest cases here once UI / Telephony-layer integration coverage
- * is needed.
+ * Heavy codec / device-profile coverage lives under app/src/test/.
  */
 @RunWith(AndroidJUnit4::class)
 class SmokeInstrumentationTest {
@@ -20,5 +18,15 @@ class SmokeInstrumentationTest {
     fun appContextLoads() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         assertEquals("com.gsm2computer.bridge", context.packageName)
+    }
+
+    @Test
+    fun defaultHubControlUrlIsTailscale() {
+        assertEquals("http://100.101.181.110:8787", BuildConfig.DEFAULT_HUB_CONTROL_URL)
+        assertEquals(
+            "ws://100.101.181.110:8787",
+            HubEndpoints.webSocketUrl(BuildConfig.DEFAULT_HUB_CONTROL_URL),
+        )
+        assertTrue(HubEndpoints.smsUrl(BuildConfig.DEFAULT_HUB_CONTROL_URL).endsWith("/sms"))
     }
 }
