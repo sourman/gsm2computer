@@ -1,0 +1,2058 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<issues format="6" by="lint 8.2.2" type="baseline" client="gradle" dependencies="false" name="AGP (8.2.2)" variant="all" version="8.2.2">
+
+    <issue
+        id="MissingPermission"
+        message="Call requires permission which may be rejected by user: code should explicitly check to see if permission is available (with `checkPermission`) or explicitly handle a potential `SecurityException`"
+        errorLine1="                AudioRecord(source, sampleRate, AudioFormat.CHANNEL_IN_MONO,"
+        errorLine2="                ^">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/audio/MicIsolationGuard.kt"
+            line="115"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="MissingPermission"
+        message="Call requires permission which may be rejected by user: code should explicitly check to see if permission is available (with `checkPermission`) or explicitly handle a potential `SecurityException`"
+        errorLine1="                    val rec = AudioRecord("
+        errorLine2="                              ^">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/rtp/RtpSession.kt"
+            line="304"
+            column="31"/>
+    </issue>
+
+    <issue
+        id="MissingPermission"
+        message="Call requires permission which may be rejected by user: code should explicitly check to see if permission is available (with `checkPermission`) or explicitly handle a potential `SecurityException`"
+        errorLine1="                        val rec = AudioRecord("
+        errorLine2="                                  ^">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/rtp/RtpSession.kt"
+            line="483"
+            column="35"/>
+    </issue>
+
+    <issue
+        id="InlinedApi"
+        message="Field requires API level 30 (current min is 29): `android.content.pm.ServiceInfo#FOREGROUND_SERVICE_TYPE_MICROPHONE`"
+        errorLine1="                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/service/GatewayService.kt"
+            line="280"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="InlinedApi"
+        message="Field requires API level 33 (current min is 26): `android.content.Context#RECEIVER_EXPORTED`"
+        errorLine1="        registerReceiver(statusReceiver, filter, Context.RECEIVER_EXPORTED)"
+        errorLine2="                                                 ~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="468"
+            column="50"/>
+    </issue>
+
+    <issue
+        id="NewApi"
+        message="Class requires API level 29 (current min is 26): `android.telephony.CellInfoNr`"
+        errorLine1="                    is CellInfoNr -> {"
+        errorLine2="                       ~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="678"
+            column="24"/>
+    </issue>
+
+    <issue
+        id="WrongConstant"
+        message="Must be one of: AudioAttributes.USAGE_UNKNOWN, AudioAttributes.USAGE_MEDIA, AudioAttributes.USAGE_VOICE_COMMUNICATION, AudioAttributes.USAGE_VOICE_COMMUNICATION_SIGNALLING, AudioAttributes.USAGE_ALARM, AudioAttributes.USAGE_NOTIFICATION, AudioAttributes.USAGE_NOTIFICATION_RINGTONE, AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_REQUEST, AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_INSTANT, AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_DELAYED, AudioAttributes.USAGE_NOTIFICATION_EVENT, AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY, AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE, AudioAttributes.USAGE_ASSISTANCE_SONIFICATION, AudioAttributes.USAGE_GAME, AudioAttributes.USAGE_ASSISTANT"
+        errorLine1="                    .setUsage(usage)"
+        errorLine2="                              ~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/rtp/RtpSession.kt"
+            line="381"
+            column="31"/>
+    </issue>
+
+    <issue
+        id="BatteryLife"
+        message="Use of `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` violates the Play Store Content Policy regarding acceptable use cases, as described in https://developer.android.com/training/monitoring-device-state/doze-standby.html"
+        errorLine1="            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {"
+        errorLine2="                                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="1615"
+            column="42"/>
+    </issue>
+
+    <issue
+        id="GradleDependency"
+        message="A newer version of androidx.core:core-ktx than 1.12.0 is available: 1.19.0"
+        errorLine1="    implementation(&quot;androidx.core:core-ktx:1.12.0&quot;)"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="85"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="GradleDependency"
+        message="A newer version of androidx.appcompat:appcompat than 1.6.1 is available: 1.7.1"
+        errorLine1="    implementation(&quot;androidx.appcompat:appcompat:1.6.1&quot;)"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="86"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="GradleDependency"
+        message="A newer version of com.google.android.material:material than 1.11.0 is available: 1.14.0"
+        errorLine1="    implementation(&quot;com.google.android.material:material:1.11.0&quot;)"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="87"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="GradleDependency"
+        message="A newer version of androidx.constraintlayout:constraintlayout than 2.1.4 is available: 2.2.1"
+        errorLine1="    implementation(&quot;androidx.constraintlayout:constraintlayout:2.1.4&quot;)"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="88"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="GradleDependency"
+        message="A newer version of androidx.test.ext:junit than 1.1.5 is available: 1.3.0"
+        errorLine1="    androidTestImplementation(&quot;androidx.test.ext:junit:1.1.5&quot;)"
+        errorLine2="                               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="93"
+            column="32"/>
+    </issue>
+
+    <issue
+        id="GradleDependency"
+        message="A newer version of androidx.test.espresso:espresso-core than 3.5.1 is available: 3.7.0"
+        errorLine1="    androidTestImplementation(&quot;androidx.test.espresso:espresso-core:3.5.1&quot;)"
+        errorLine2="                               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="build.gradle.kts"
+            line="94"
+            column="32"/>
+    </issue>
+
+    <issue
+        id="SwitchIntDef"
+        message="Switch statement on an `int` with known associated constant missing case `Call.STATE_AUDIO_PROCESSING`, `Call.STATE_DISCONNECTED`, `Call.STATE_DISCONNECTING`, `Call.STATE_HOLDING`, `Call.STATE_NEW`, `Call.STATE_PULLING_CALL`, `Call.STATE_SELECT_PHONE_ACCOUNT`, `Call.STATE_SIMULATED_RINGING`"
+        errorLine1="        when (call.state) {"
+        errorLine2="        ~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/gsm/GsmCallManager.kt"
+            line="76"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="UseAppTint"
+        message="Must use `app:tint` instead of `android:tint`"
+        errorLine1="                    android:tint=&quot;@color/primary&quot; />"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="385"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="UseAppTint"
+        message="Must use `app:tint` instead of `android:tint`"
+        errorLine1="                    android:tint=&quot;@color/text_hint&quot; />"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="412"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="UseAppTint"
+        message="Must use `app:tint` instead of `android:tint`"
+        errorLine1="                    android:tint=&quot;@color/text_hint&quot; />"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="439"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="PermissionImpliesUnsupportedChromeOsHardware"
+        message="Permission exists without corresponding hardware `&lt;uses-feature android:name=&quot;android.hardware.telephony&quot; required=&quot;false&quot;>` tag"
+        errorLine1="    &lt;uses-permission android:name=&quot;android.permission.CALL_PHONE&quot; />"
+        errorLine2="     ~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/AndroidManifest.xml"
+            line="27"
+            column="6"/>
+    </issue>
+
+    <issue
+        id="PermissionImpliesUnsupportedChromeOsHardware"
+        message="Permission exists without corresponding hardware `&lt;uses-feature android:name=&quot;android.hardware.telephony&quot; required=&quot;false&quot;>` tag"
+        errorLine1="    &lt;uses-permission android:name=&quot;android.permission.CALL_PRIVILEGED&quot;"
+        errorLine2="     ~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/AndroidManifest.xml"
+            line="28"
+            column="6"/>
+    </issue>
+
+    <issue
+        id="PermissionImpliesUnsupportedChromeOsHardware"
+        message="Permission exists without corresponding hardware `&lt;uses-feature android:name=&quot;android.hardware.telephony&quot; required=&quot;false&quot;>` tag"
+        errorLine1="    &lt;uses-permission android:name=&quot;android.permission.MODIFY_PHONE_STATE&quot;"
+        errorLine2="     ~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/AndroidManifest.xml"
+            line="34"
+            column="6"/>
+    </issue>
+
+    <issue
+        id="HardwareIds"
+        message="Using `getLine1Number` to get device identifiers is not recommended"
+        errorLine1="                    tm.line1Number"
+        errorLine2="                    ~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="627"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="HardwareIds"
+        message="Using `getString` to get device identifiers is not recommended"
+        errorLine1="                    val androidId = android.provider.Settings.Secure.getString("
+        errorLine2="                                    ^">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="641"
+            column="37"/>
+    </issue>
+
+    <issue
+        id="DataExtractionRules"
+        message="The attribute `android:allowBackup` is deprecated from Android 12 and higher and may be removed in future versions. Consider adding the attribute `android:dataExtractionRules` specifying an `@xml` resource which configures cloud backups and device transfers on Android 12 and higher."
+        errorLine1="        android:allowBackup=&quot;false&quot;"
+        errorLine2="                             ~~~~~">
+        <location
+            file="src/main/AndroidManifest.xml"
+            line="52"
+            column="30"/>
+    </issue>
+
+    <issue
+        id="WakelockTimeout"
+        message="Provide a timeout when requesting a wakelock with `PowerManager.Wakelock.acquire(long timeout)`. This will ensure the OS will cleanup any wakelocks that last longer than you intend, and will save your user&apos;s battery."
+        errorLine1="            acquire()"
+        errorLine2="            ~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/service/GatewayService.kt"
+            line="511"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="ObsoleteSdkInt"
+        message="This folder configuration (`v26`) is unnecessary; `minSdkVersion` is 26. Merge all the resources in this folder into `mipmap-anydpi`.">
+        <location
+            file="src/main/res/mipmap-anydpi-v26"/>
+    </issue>
+
+    <issue
+        id="StaticFieldLeak"
+        message="Do not place Android context classes in static fields (static reference to `GsmCallManager` which has field `inCallService` pointing to `InCallService`); this is a memory leak"
+        errorLine1="/**"
+        errorLine2="^">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/gsm/GsmCallManager.kt"
+            line="14"
+            column="1"/>
+    </issue>
+
+    <issue
+        id="StaticFieldLeak"
+        message="Do not place Android context classes in static fields; this is a memory leak"
+        errorLine1="    @Volatile var inCallService: InCallService? = null; private set"
+        errorLine2="    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/gsm/GsmCallManager.kt"
+            line="38"
+            column="5"/>
+    </issue>
+
+    <issue
+        id="VectorPath"
+        message="Very long vector path (1197 characters), which is bad for performance. Considering reducing precision, removing minor details or rasterizing vector."
+        errorLine1="        android:pathData=&quot;M495.9,166.6c3.2,8.7,0.5,18.4,-6.4,24.6l-43.3,39.4c1.1,8.3,1.7,16.8,1.7,25.4s-0.6,17.1,-1.7,25.4l43.3,39.4c6.9,6.2,9.6,15.9,6.4,24.6c-4.4,11.9,-9.7,23.3,-15.8,34.3l-3.2,5.6c-6.4,10.9,-13.8,21.2,-21.9,31l-0.4,0.5c-6.3,7.4,-16.2,10,-25.3,6.4l-54.4,-22.1c-13.5,10.3,-28.4,18.8,-44.3,25.1l-12.9,57.2c-2.2,9.7,-10.2,16.8,-20.1,17.9c-12.7,1.5,-25.7,2.2,-38.9,2.2s-26.3,-0.8,-38.9,-2.2c-9.9,-1.1,-17.9,-8.2,-20.1,-17.9l-12.9,-57.2c-16,-6.4,-30.9,-14.8,-44.3,-25.1l-54.4,22.1c-9.1,3.7,-18.9,1,-25.3,-6.4l-0.4,-0.5c-8.1,-9.8,-15.5,-20.1,-21.9,-31l-3.2,-5.6c-6.1,-10.9,-11.4,-22.4,-15.8,-34.3c-3.2,-8.7,-0.5,-18.4,6.4,-24.6l43.3,-39.4c-1.1,-8.3,-1.7,-16.8,-1.7,-25.4s0.6,-17.1,1.7,-25.4L49.1,191.2c-6.9,-6.2,-9.6,-15.9,-6.4,-24.6c4.4,-11.9,9.7,-23.3,15.8,-34.3l3.2,-5.6c6.4,-10.9,13.8,-21.2,21.9,-31l0.4,-0.5c6.3,-7.4,16.2,-10,25.3,-6.4l54.4,22.1c13.5,-10.3,28.4,-18.8,44.3,-25.1l12.9,-57.2c2.2,-9.7,10.2,-16.8,20.1,-17.9C253.7,9.8,266.7,9,279.9,9h0c13.1,0,26.1,0.8,38.8,2.2c0,0,0,0,0.1,0c9.9,1.1,17.9,8.2,20.1,17.9l12.9,57.2c16,6.4,30.9,14.8,44.3,25.1l54.4,-22.1c9.1,-3.7,18.9,-1,25.3,6.4l0.4,0.5c8.1,9.8,15.5,20.1,21.9,31l3.2,5.6c6.1,10.9,11.4,22.4,15.8,34.3zM256,336a80,80 0,1 0,0 -160a80,80 0,1 0,0 160z&quot; />"
+        errorLine2="                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/drawable/ic_gear.xml"
+            line="10"
+            column="27"/>
+    </issue>
+
+    <issue
+        id="VectorPath"
+        message="Very long vector path (848 characters), which is bad for performance. Considering reducing precision, removing minor details or rasterizing vector."
+        errorLine1="        android:pathData=&quot;M12,19C10.9,19 10,19.9 10,21C10,22.1 10.9,23 12,23C13.1,23 14,22.1 14,21C14,19.9 13.1,19 12,19ZM6,1C4.9,1 4,1.9 4,3C4,4.1 4.9,5 6,5C7.1,5 8,4.1 8,3C8,1.9 7.1,1 6,1ZM6,7C4.9,7 4,7.9 4,9C4,10.1 4.9,11 6,11C7.1,11 8,10.1 8,9C8,7.9 7.1,7 6,7ZM6,13C4.9,13 4,13.9 4,15C4,16.1 4.9,17 6,17C7.1,17 8,16.1 8,15C8,13.9 7.1,13 6,13ZM18,5C19.1,5 20,4.1 20,3C20,1.9 19.1,1 18,1C16.9,1 16,1.9 16,3C16,4.1 16.9,5 18,5ZM12,7C10.9,7 10,7.9 10,9C10,10.1 10.9,11 12,11C13.1,11 14,10.1 14,9C14,7.9 13.1,7 12,7ZM18,7C16.9,7 16,7.9 16,9C16,10.1 16.9,11 18,11C19.1,11 20,10.1 20,9C20,7.9 19.1,7 18,7ZM18,13C16.9,13 16,13.9 16,15C16,16.1 16.9,17 18,17C19.1,17 20,16.1 20,15C20,13.9 19.1,13 18,13ZM12,1C10.9,1 10,1.9 10,3C10,4.1 10.9,5 12,5C13.1,5 14,4.1 14,3C14,1.9 13.1,1 12,1ZM12,13C10.9,13 10,13.9 10,15C10,16.1 10.9,17 12,17C13.1,17 14,16.1 14,15C14,13.9 13.1,13 12,13Z&quot;/>"
+        errorLine2="                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/drawable/ic_tab_dialer.xml"
+            line="10"
+            column="27"/>
+    </issue>
+
+    <issue
+        id="VectorPath"
+        message="Very long vector path (972 characters), which is bad for performance. Considering reducing precision, removing minor details or rasterizing vector."
+        errorLine1="        android:pathData=&quot;M19.14,12.94C19.18,12.64 19.2,12.33 19.2,12C19.2,11.68 19.18,11.36 19.13,11.06L21.16,9.48C21.34,9.34 21.39,9.07 21.28,8.87L19.36,5.55C19.24,5.33 18.99,5.26 18.77,5.33L16.38,6.29C15.88,5.91 15.35,5.59 14.76,5.35L14.4,2.81C14.36,2.57 14.16,2.4 13.92,2.4H10.08C9.84,2.4 9.65,2.57 9.61,2.81L9.25,5.35C8.66,5.59 8.12,5.92 7.63,6.29L5.24,5.33C5.02,5.25 4.77,5.33 4.65,5.55L2.74,8.87C2.62,9.08 2.66,9.34 2.86,9.48L4.89,11.06C4.84,11.36 4.8,11.69 4.8,12C4.8,12.31 4.82,12.64 4.87,12.94L2.84,14.52C2.66,14.66 2.61,14.93 2.72,15.13L4.64,18.45C4.76,18.67 5.01,18.74 5.23,18.67L7.62,17.71C8.12,18.09 8.65,18.41 9.24,18.65L9.6,21.19C9.65,21.43 9.84,21.6 10.08,21.6H13.92C14.16,21.6 14.36,21.43 14.39,21.19L14.75,18.65C15.34,18.41 15.88,18.09 16.37,17.71L18.76,18.67C18.98,18.75 19.23,18.67 19.35,18.45L21.27,15.13C21.39,14.91 21.34,14.66 21.15,14.52L19.14,12.94ZM12,15.6C10.02,15.6 8.4,13.98 8.4,12C8.4,10.02 10.02,8.4 12,8.4C13.98,8.4 15.6,10.02 15.6,12C15.6,13.98 13.98,15.6 12,15.6Z&quot;/>"
+        errorLine2="                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/drawable/ic_tab_settings.xml"
+            line="10"
+            column="27"/>
+    </issue>
+
+    <issue
+        id="DisableBaselineAlignment"
+        message="Set `android:baselineAligned=&quot;false&quot;` on this element for better performance"
+        errorLine1="        &lt;LinearLayout"
+        errorLine2="         ~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="359"
+            column="10"/>
+    </issue>
+
+    <issue
+        id="Overdraw"
+        message="Possible overdraw: Root element paints background `@color/background` with a theme that also paints a background (inferred theme is `@style/Theme.Gsm2ComputerBridge`)"
+        errorLine1="    android:background=&quot;@color/background&quot;>"
+        errorLine2="    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="5"
+            column="5"/>
+    </issue>
+
+    <issue
+        id="UnusedResources"
+        message="The resource `R.drawable.ic_notification` appears to be unused"
+        errorLine1="&lt;vector xmlns:android=&quot;http://schemas.android.com/apk/res/android&quot;"
+        errorLine2="^">
+        <location
+            file="src/main/res/drawable/ic_notification.xml"
+            line="3"
+            column="1"/>
+    </issue>
+
+    <issue
+        id="UnusedResources"
+        message="The resource `R.string.notification_title` appears to be unused"
+        errorLine1="    &lt;string name=&quot;notification_title&quot;>callagent&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="7"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UnusedResources"
+        message="The resource `R.string.notification_text_registered` appears to be unused"
+        errorLine1="    &lt;string name=&quot;notification_text_registered&quot;>Registered — Ready&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="8"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UnusedResources"
+        message="The resource `R.string.notification_text_unregistered` appears to be unused"
+        errorLine1="    &lt;string name=&quot;notification_text_unregistered&quot;>Connecting…&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="9"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="UnusedResources"
+        message="The resource `R.string.notification_text_call` appears to be unused"
+        errorLine1="    &lt;string name=&quot;notification_text_call&quot;>Call active&lt;/string>"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/values/strings.xml"
+            line="10"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="TooManyViews"
+        message="`activity_main.xml` has more than 80 views, bad for performance"
+        errorLine1="                &lt;TextView android:id=&quot;@+id/btnDtmf8&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;8&quot; />"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="565"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="IconLauncherShape"
+        message="Launcher icons should not fill every pixel of their square region; see the design guide for details">
+        <location
+            file="src/main/res/mipmap-hdpi/ic_launcher.png"/>
+    </issue>
+
+    <issue
+        id="IconLauncherShape"
+        message="Launcher icons should not fill every pixel of their square region; see the design guide for details">
+        <location
+            file="src/main/res/mipmap-mdpi/ic_launcher.png"/>
+    </issue>
+
+    <issue
+        id="IconLauncherShape"
+        message="Launcher icons should not fill every pixel of their square region; see the design guide for details">
+        <location
+            file="src/main/res/mipmap-xhdpi/ic_launcher.png"/>
+    </issue>
+
+    <issue
+        id="IconLauncherShape"
+        message="Launcher icons should not fill every pixel of their square region; see the design guide for details">
+        <location
+            file="src/main/res/mipmap-xxhdpi/ic_launcher.png"/>
+    </issue>
+
+    <issue
+        id="IconLauncherShape"
+        message="Launcher icons should not fill every pixel of their square region; see the design guide for details">
+        <location
+            file="src/main/res/mipmap-xxxhdpi/ic_launcher.png"/>
+    </issue>
+
+    <issue
+        id="IconLauncherShape"
+        message="Launcher icon used as round icon did not have a circular shape">
+        <location
+            file="src/main/res/mipmap-hdpi/ic_launcher_round.png"/>
+    </issue>
+
+    <issue
+        id="IconLauncherShape"
+        message="Launcher icon used as round icon did not have a circular shape">
+        <location
+            file="src/main/res/mipmap-mdpi/ic_launcher_round.png"/>
+    </issue>
+
+    <issue
+        id="IconLauncherShape"
+        message="Launcher icon used as round icon did not have a circular shape">
+        <location
+            file="src/main/res/mipmap-xhdpi/ic_launcher_round.png"/>
+    </issue>
+
+    <issue
+        id="IconLauncherShape"
+        message="Launcher icon used as round icon did not have a circular shape">
+        <location
+            file="src/main/res/mipmap-xxhdpi/ic_launcher_round.png"/>
+    </issue>
+
+    <issue
+        id="IconLauncherShape"
+        message="Launcher icon used as round icon did not have a circular shape">
+        <location
+            file="src/main/res/mipmap-xxxhdpi/ic_launcher_round.png"/>
+    </issue>
+
+    <issue
+        id="MonochromeLauncherIcon"
+        message="The application adaptive icon is missing a monochrome tag"
+        errorLine1="&lt;adaptive-icon xmlns:android=&quot;http://schemas.android.com/apk/res/android&quot;>"
+        errorLine2="^">
+        <location
+            file="src/main/res/mipmap-anydpi-v26/ic_launcher.xml"
+            line="2"
+            column="1"/>
+    </issue>
+
+    <issue
+        id="MonochromeLauncherIcon"
+        message="The application adaptive roundIcon is missing a monochrome tag"
+        errorLine1="&lt;adaptive-icon xmlns:android=&quot;http://schemas.android.com/apk/res/android&quot;>"
+        errorLine2="^">
+        <location
+            file="src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml"
+            line="2"
+            column="1"/>
+    </issue>
+
+    <issue
+        id="IconLocation"
+        message="Found bitmap drawable `res/drawable/ic_launcher_foreground.png` in densityless folder">
+        <location
+            file="src/main/res/drawable/ic_launcher_foreground.png"/>
+    </issue>
+
+    <issue
+        id="IconDuplicates"
+        message="The following unrelated icon files have identical contents: ic_launcher.png, ic_launcher_round.png">
+        <location
+            file="src/main/res/mipmap-hdpi/ic_launcher_round.png"/>
+        <location
+            file="src/main/res/mipmap-hdpi/ic_launcher.png"/>
+    </issue>
+
+    <issue
+        id="IconDuplicates"
+        message="The following unrelated icon files have identical contents: ic_launcher.png, ic_launcher_round.png">
+        <location
+            file="src/main/res/mipmap-mdpi/ic_launcher_round.png"/>
+        <location
+            file="src/main/res/mipmap-mdpi/ic_launcher.png"/>
+    </issue>
+
+    <issue
+        id="IconDuplicates"
+        message="The following unrelated icon files have identical contents: ic_launcher.png, ic_launcher_round.png">
+        <location
+            file="src/main/res/mipmap-xhdpi/ic_launcher_round.png"/>
+        <location
+            file="src/main/res/mipmap-xhdpi/ic_launcher.png"/>
+    </issue>
+
+    <issue
+        id="IconDuplicates"
+        message="The following unrelated icon files have identical contents: ic_launcher.png, ic_launcher_round.png">
+        <location
+            file="src/main/res/mipmap-xxhdpi/ic_launcher_round.png"/>
+        <location
+            file="src/main/res/mipmap-xxhdpi/ic_launcher.png"/>
+    </issue>
+
+    <issue
+        id="IconDuplicates"
+        message="The following unrelated icon files have identical contents: ic_launcher.png, ic_launcher_round.png">
+        <location
+            file="src/main/res/mipmap-xxxhdpi/ic_launcher_round.png"/>
+        <location
+            file="src/main/res/mipmap-xxxhdpi/ic_launcher.png"/>
+    </issue>
+
+    <issue
+        id="ButtonStyle"
+        message="Buttons in button bars should be borderless; use `style=&quot;?android:attr/buttonBarButtonStyle&quot;` (and `?android:attr/buttonBarStyle` on the parent)"
+        errorLine1="                    &lt;Button"
+        errorLine2="                     ~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="314"
+            column="22"/>
+    </issue>
+
+    <issue
+        id="ButtonStyle"
+        message="Buttons in button bars should be borderless; use `style=&quot;?android:attr/buttonBarButtonStyle&quot;` (and `?android:attr/buttonBarStyle` on the parent)"
+        errorLine1="                    &lt;Button"
+        errorLine2="                     ~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="324"
+            column="22"/>
+    </issue>
+
+    <issue
+        id="ButtonStyle"
+        message="Buttons in button bars should be borderless; use `style=&quot;?android:attr/buttonBarButtonStyle&quot;` (and `?android:attr/buttonBarStyle` on the parent)"
+        errorLine1="            &lt;Button"
+        errorLine2="             ~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="511"
+            column="14"/>
+    </issue>
+
+    <issue
+        id="ButtonStyle"
+        message="Buttons in button bars should be borderless; use `style=&quot;?android:attr/buttonBarButtonStyle&quot;` (and `?android:attr/buttonBarStyle` on the parent)"
+        errorLine1="            &lt;Button"
+        errorLine2="             ~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="521"
+            column="14"/>
+    </issue>
+
+    <issue
+        id="ButtonStyle"
+        message="Buttons in button bars should be borderless; use `style=&quot;?android:attr/buttonBarButtonStyle&quot;` (and `?android:attr/buttonBarStyle` on the parent)"
+        errorLine1="            &lt;Button"
+        errorLine2="             ~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="531"
+            column="14"/>
+    </issue>
+
+    <issue
+        id="ButtonStyle"
+        message="Buttons in button bars should be borderless; use `style=&quot;?android:attr/buttonBarButtonStyle&quot;` (and `?android:attr/buttonBarStyle` on the parent)"
+        errorLine1="            &lt;Button"
+        errorLine2="             ~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="590"
+            column="14"/>
+    </issue>
+
+    <issue
+        id="ButtonStyle"
+        message="Buttons in button bars should be borderless; use `style=&quot;?android:attr/buttonBarButtonStyle&quot;` (and `?android:attr/buttonBarStyle` on the parent)"
+        errorLine1="            &lt;Button"
+        errorLine2="             ~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="605"
+            column="14"/>
+    </issue>
+
+    <issue
+        id="ClickableViewAccessibility"
+        message="Custom view ``TextView`` has `setOnTouchListener` called on it but does not override `performClick`"
+        errorLine1="            btn.setOnTouchListener { _, event ->"
+        errorLine2="            ^">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="1450"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="ClickableViewAccessibility"
+        message="`onTouch` lambda should call `View#performClick` when a click is detected"
+        errorLine1="            btn.setOnTouchListener { _, event ->"
+        errorLine2="                                   ^">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="1450"
+            column="36"/>
+    </issue>
+
+    <issue
+        id="ContentDescription"
+        message="Missing `contentDescription` attribute on image"
+        errorLine1="                &lt;ImageView"
+        errorLine2="                 ~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="380"
+            column="18"/>
+    </issue>
+
+    <issue
+        id="ContentDescription"
+        message="Missing `contentDescription` attribute on image"
+        errorLine1="                &lt;ImageView"
+        errorLine2="                 ~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="407"
+            column="18"/>
+    </issue>
+
+    <issue
+        id="ContentDescription"
+        message="Missing `contentDescription` attribute on image"
+        errorLine1="                &lt;ImageView"
+        errorLine2="                 ~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="434"
+            column="18"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                    android.telecom.Call.STATE_CONNECTING -> tvInCallStatus.text = &quot;Calling...&quot;"
+        errorLine2="                                                                                    ~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="153"
+            column="85"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                        tvInCallStatus.text = &quot;Ringing...&quot;"
+        errorLine2="                                               ~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="155"
+            column="48"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                        tvInCallStatus.text = &quot;Ringing...&quot;"
+        errorLine2="                                               ~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="160"
+            column="48"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                            tvInCallStatus.text = &quot;Connecting...&quot;"
+        errorLine2="                                                   ~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="168"
+            column="52"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                            tvInCallStatus.text = &quot;Connected&quot;"
+        errorLine2="                                                   ~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="171"
+            column="52"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                                tvInCallTimer.text = &quot;00:00&quot;"
+        errorLine2="                                                      ~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="175"
+            column="55"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                            tvInCallStatus.text = &quot;Incoming call&quot;"
+        errorLine2="                                                   ~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="255"
+            column="52"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                            &quot;GSM_DIALING&quot; -> tvInCallStatus.text = &quot;Calling...&quot;"
+        errorLine2="                                                                    ~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="261"
+            column="69"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                            &quot;GSM_ANSWERED&quot;, &quot;SIP_CALLING&quot; -> tvInCallStatus.text = &quot;Connecting...&quot;"
+        errorLine2="                                                                                    ~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="262"
+            column="85"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                            &quot;SIP_RINGING&quot; -> tvInCallStatus.text = &quot;Ringing...&quot;"
+        errorLine2="                                                                    ~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="263"
+            column="69"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                                tvInCallStatus.text = &quot;Connected&quot;"
+        errorLine2="                                                       ~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="265"
+            column="56"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                                    tvInCallTimer.text = &quot;00:00&quot;"
+        errorLine2="                                                          ~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="268"
+            column="59"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                            &quot;TEARING_DOWN&quot; -> tvInCallStatus.text = &quot;Ending...&quot;"
+        errorLine2="                                                                     ~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="273"
+            column="70"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                tvInCallStatus.text = &quot;Incoming call&quot;"
+        errorLine2="                                       ~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="401"
+            column="40"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            tvNetworkType.text = &quot;No permission&quot;"
+        errorLine2="                                  ~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="617"
+            column="35"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            tvPhoneNumber.text = &quot;No permission&quot;"
+        errorLine2="                                  ~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="652"
+            column="35"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            tvImei.text = &quot;No permission&quot;"
+        errorLine2="                           ~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="653"
+            column="28"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="                        tvGsmSignal.text = &quot;${cellInfo.cellSignalStrength.level}/4 (${cellInfo.cellSignalStrength.dbm} dBm)&quot;"
+        errorLine2="                                           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="664"
+            column="44"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                        tvGsmSignal.text = &quot;${cellInfo.cellSignalStrength.level}/4 (${cellInfo.cellSignalStrength.dbm} dBm)&quot;"
+        errorLine2="                                                                                                                      ~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="664"
+            column="119"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="                        tvGsmSignal.text = &quot;${cellInfo.cellSignalStrength.level}/4 (${cellInfo.cellSignalStrength.dbm} dBm)&quot;"
+        errorLine2="                                           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="670"
+            column="44"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                        tvGsmSignal.text = &quot;${cellInfo.cellSignalStrength.level}/4 (${cellInfo.cellSignalStrength.dbm} dBm)&quot;"
+        errorLine2="                                                                                                                      ~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="670"
+            column="119"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="                        tvGsmSignal.text = &quot;${cellInfo.cellSignalStrength.level}/4 (${cellInfo.cellSignalStrength.dbm} dBm)&quot;"
+        errorLine2="                                           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="676"
+            column="44"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                        tvGsmSignal.text = &quot;${cellInfo.cellSignalStrength.level}/4 (${cellInfo.cellSignalStrength.dbm} dBm)&quot;"
+        errorLine2="                                                                                                                      ~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="676"
+            column="119"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="                            tvGsmSignal.text = &quot;${cellInfo.cellSignalStrength.level}/4 (${cellInfo.cellSignalStrength.dbm} dBm)&quot;"
+        errorLine2="                                               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="684"
+            column="48"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                            tvGsmSignal.text = &quot;${cellInfo.cellSignalStrength.level}/4 (${cellInfo.cellSignalStrength.dbm} dBm)&quot;"
+        errorLine2="                                                                                                                          ~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="684"
+            column="123"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            tvCellId.text = &quot;No permission&quot;"
+        errorLine2="                             ~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="697"
+            column="30"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            tvGsmSignal.text = &quot;No permission&quot;"
+        errorLine2="                                ~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="698"
+            column="33"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="            tvWifiSignal.text = &quot;$level/4 ($rssi dBm)&quot;"
+        errorLine2="                                ~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="719"
+            column="33"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            tvWifiSignal.text = &quot;$level/4 ($rssi dBm)&quot;"
+        errorLine2="                                                ~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="719"
+            column="49"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            tvWifiNetwork.text = &quot;Not connected&quot;"
+        errorLine2="                                  ~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="733"
+            column="35"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            btnCheck.text = &quot;Checking…&quot;"
+        errorLine2="                             ~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="752"
+            column="30"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="                btnCheck.text = &quot;Check Gateway Support&quot;"
+        errorLine2="                                 ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="756"
+            column="34"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="Do not concatenate text displayed with `setText`. Use resource string with placeholders."
+        errorLine1="                        text = mixerDump.take(2000) + if (mixerDump.length > 2000) &quot;\n... (truncated)&quot; else &quot;&quot;"
+        errorLine2="                               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="973"
+            column="32"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="        tvInCallStatus.text = &quot;Call ended&quot;"
+        errorLine2="                               ~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="1326"
+            column="32"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="        tvInCallStatus.text = &quot;Calling...&quot;"
+        errorLine2="                               ~~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="1338"
+            column="32"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            tvInCallStatus.text = &quot;Ending...&quot;"
+        errorLine2="                                   ~~~~~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="1388"
+            column="36"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            btnStart.text = &quot;STOP&quot;"
+        errorLine2="                             ~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="1494"
+            column="30"/>
+    </issue>
+
+    <issue
+        id="SetTextI18n"
+        message="String literal in `setText` can not be translated. Use Android resources instead."
+        errorLine1="            btnStart.text = &quot;START&quot;"
+        errorLine2="                             ~~~~~">
+        <location
+            file="src/main/java/com/gsm2computer/bridge/MainActivity.kt"
+            line="1497"
+            column="30"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Enter number&quot;, should use `@string` resource"
+        errorLine1="                    android:hint=&quot;Enter number&quot;"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="39"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;1&quot;, should use `@string` resource"
+        errorLine1="                        &lt;TextView android:id=&quot;@+id/btnDial1&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;1&quot; />"
+        errorLine2="                                                                                                                                            ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="61"
+            column="141"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;2&quot;, should use `@string` resource"
+        errorLine1="                        &lt;TextView android:id=&quot;@+id/btnDial2&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;2&quot; />"
+        errorLine2="                                                                                                                                            ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="62"
+            column="141"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;3&quot;, should use `@string` resource"
+        errorLine1="                        &lt;TextView android:id=&quot;@+id/btnDial3&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;3&quot; />"
+        errorLine2="                                                                                                                                            ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="63"
+            column="141"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;4&quot;, should use `@string` resource"
+        errorLine1="                        &lt;TextView android:id=&quot;@+id/btnDial4&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;4&quot; />"
+        errorLine2="                                                                                                                                            ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="72"
+            column="141"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;5&quot;, should use `@string` resource"
+        errorLine1="                        &lt;TextView android:id=&quot;@+id/btnDial5&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;5&quot; />"
+        errorLine2="                                                                                                                                            ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="73"
+            column="141"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;6&quot;, should use `@string` resource"
+        errorLine1="                        &lt;TextView android:id=&quot;@+id/btnDial6&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;6&quot; />"
+        errorLine2="                                                                                                                                            ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="74"
+            column="141"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;7&quot;, should use `@string` resource"
+        errorLine1="                        &lt;TextView android:id=&quot;@+id/btnDial7&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;7&quot; />"
+        errorLine2="                                                                                                                                            ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="83"
+            column="141"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;8&quot;, should use `@string` resource"
+        errorLine1="                        &lt;TextView android:id=&quot;@+id/btnDial8&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;8&quot; />"
+        errorLine2="                                                                                                                                            ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="84"
+            column="141"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;9&quot;, should use `@string` resource"
+        errorLine1="                        &lt;TextView android:id=&quot;@+id/btnDial9&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;9&quot; />"
+        errorLine2="                                                                                                                                            ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="85"
+            column="141"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;*&quot;, should use `@string` resource"
+        errorLine1="                        &lt;TextView android:id=&quot;@+id/btnDialStar&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;*&quot; />"
+        errorLine2="                                                                                                                                               ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="94"
+            column="144"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;0&quot;, should use `@string` resource"
+        errorLine1="                        &lt;TextView android:id=&quot;@+id/btnDial0&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;0&quot; />"
+        errorLine2="                                                                                                                                            ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="95"
+            column="141"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;#&quot;, should use `@string` resource"
+        errorLine1="                        &lt;TextView android:id=&quot;@+id/btnDialHash&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;#&quot; />"
+        errorLine2="                                                                                                                                               ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="96"
+            column="144"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;+&quot;, should use `@string` resource"
+        errorLine1="                        &lt;TextView android:id=&quot;@+id/btnDialPlus&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;+&quot; />"
+        errorLine2="                                                                                                                                               ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="106"
+            column="144"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Call&quot;, should use `@string` resource"
+        errorLine1="                            android:contentDescription=&quot;Call&quot; />"
+        errorLine2="                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="121"
+            column="29"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;\u232B&quot;, should use `@string` resource"
+        errorLine1="                            android:text=&quot;\u232B&quot; />"
+        errorLine2="                            ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="128"
+            column="29"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Incoming&quot;, should use `@string` resource"
+        errorLine1="                        android:contentDescription=&quot;Incoming&quot;"
+        errorLine2="                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="160"
+            column="25"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Outgoing&quot;, should use `@string` resource"
+        errorLine1="                        android:contentDescription=&quot;Outgoing&quot;"
+        errorLine2="                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="172"
+            column="25"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Clear call log&quot;, should use `@string` resource"
+        errorLine1="                        android:contentDescription=&quot;Clear call log&quot;"
+        errorLine2="                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="184"
+            column="25"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;No calls yet&quot;, should use `@string` resource"
+        errorLine1="                    android:text=&quot;No calls yet&quot;"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="211"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Device info&quot;, should use `@string` resource"
+        errorLine1="                        android:contentDescription=&quot;Device info&quot;"
+        errorLine2="                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="257"
+            column="25"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Settings&quot;, should use `@string` resource"
+        errorLine1="                        android:contentDescription=&quot;Settings&quot;"
+        errorLine2="                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="266"
+            column="25"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Stopped&quot;, should use `@string` resource"
+        errorLine1="                        android:text=&quot;Stopped&quot;"
+        errorLine2="                        ~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="292"
+            column="25"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;START&quot;, should use `@string` resource"
+        errorLine1="                        android:text=&quot;START&quot;"
+        errorLine2="                        ~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="319"
+            column="25"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;LOG&quot;, should use `@string` resource"
+        errorLine1="                        android:text=&quot;LOG&quot;"
+        errorLine2="                        ~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="329"
+            column="25"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Dialer&quot;, should use `@string` resource"
+        errorLine1="                    android:text=&quot;Dialer&quot;"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="390"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Calls&quot;, should use `@string` resource"
+        errorLine1="                    android:text=&quot;Calls&quot;"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="417"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Settings&quot;, should use `@string` resource"
+        errorLine1="                    android:text=&quot;Settings&quot;"
+        errorLine2="                    ~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="444"
+            column="21"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Calling...&quot;, should use `@string` resource"
+        errorLine1="            android:text=&quot;Calling...&quot;"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="470"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;00:00&quot;, should use `@string` resource"
+        errorLine1="            android:text=&quot;00:00&quot;"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="493"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;MUTE&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;MUTE&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="516"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;KEYPAD&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;KEYPAD&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="526"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;SPEAKER&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;SPEAKER&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="536"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;1&quot;, should use `@string` resource"
+        errorLine1="                &lt;TextView android:id=&quot;@+id/btnDtmf1&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;1&quot; />"
+        errorLine2="                                                                                                                                    ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="552"
+            column="133"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;2&quot;, should use `@string` resource"
+        errorLine1="                &lt;TextView android:id=&quot;@+id/btnDtmf2&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;2&quot; />"
+        errorLine2="                                                                                                                                    ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="553"
+            column="133"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;3&quot;, should use `@string` resource"
+        errorLine1="                &lt;TextView android:id=&quot;@+id/btnDtmf3&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;3&quot; />"
+        errorLine2="                                                                                                                                    ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="554"
+            column="133"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;4&quot;, should use `@string` resource"
+        errorLine1="                &lt;TextView android:id=&quot;@+id/btnDtmf4&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;4&quot; />"
+        errorLine2="                                                                                                                                    ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="558"
+            column="133"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;5&quot;, should use `@string` resource"
+        errorLine1="                &lt;TextView android:id=&quot;@+id/btnDtmf5&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;5&quot; />"
+        errorLine2="                                                                                                                                    ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="559"
+            column="133"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;6&quot;, should use `@string` resource"
+        errorLine1="                &lt;TextView android:id=&quot;@+id/btnDtmf6&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;6&quot; />"
+        errorLine2="                                                                                                                                    ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="560"
+            column="133"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;7&quot;, should use `@string` resource"
+        errorLine1="                &lt;TextView android:id=&quot;@+id/btnDtmf7&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;7&quot; />"
+        errorLine2="                                                                                                                                    ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="564"
+            column="133"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;8&quot;, should use `@string` resource"
+        errorLine1="                &lt;TextView android:id=&quot;@+id/btnDtmf8&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;8&quot; />"
+        errorLine2="                                                                                                                                    ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="565"
+            column="133"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;9&quot;, should use `@string` resource"
+        errorLine1="                &lt;TextView android:id=&quot;@+id/btnDtmf9&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;9&quot; />"
+        errorLine2="                                                                                                                                    ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="566"
+            column="133"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;*&quot;, should use `@string` resource"
+        errorLine1="                &lt;TextView android:id=&quot;@+id/btnDtmfStar&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;*&quot; />"
+        errorLine2="                                                                                                                                       ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="570"
+            column="136"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;0&quot;, should use `@string` resource"
+        errorLine1="                &lt;TextView android:id=&quot;@+id/btnDtmf0&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;0&quot; />"
+        errorLine2="                                                                                                                                    ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="571"
+            column="133"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;#&quot;, should use `@string` resource"
+        errorLine1="                &lt;TextView android:id=&quot;@+id/btnDtmfHash&quot; style=&quot;@style/DialButton&quot; android:layout_width=&quot;0dp&quot; android:layout_weight=&quot;1&quot; android:text=&quot;#&quot; />"
+        errorLine2="                                                                                                                                       ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="572"
+            column="136"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;REJECT&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;REJECT&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="596"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;ANSWER&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;ANSWER&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="611"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;END CALL&quot;, should use `@string` resource"
+        errorLine1="            android:text=&quot;END CALL&quot;"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/activity_main.xml"
+            line="627"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;SIP Server&quot;, should use `@string` resource"
+        errorLine1="        android:text=&quot;SIP Server&quot;"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_config.xml"
+            line="12"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;sip.callagent.pro&quot;, should use `@string` resource"
+        errorLine1="        android:hint=&quot;sip.callagent.pro&quot;"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_config.xml"
+            line="20"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;SIP Port&quot;, should use `@string` resource"
+        errorLine1="        android:text=&quot;SIP Port&quot;"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_config.xml"
+            line="33"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;5060&quot;, should use `@string` resource"
+        errorLine1="        android:hint=&quot;5060&quot;"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_config.xml"
+            line="42"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;SIP Username&quot;, should use `@string` resource"
+        errorLine1="        android:text=&quot;SIP Username&quot;"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_config.xml"
+            line="55"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;extension&quot;, should use `@string` resource"
+        errorLine1="        android:hint=&quot;extension&quot;"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_config.xml"
+            line="64"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;SIP Password&quot;, should use `@string` resource"
+        errorLine1="        android:text=&quot;SIP Password&quot;"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_config.xml"
+            line="77"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;password&quot;, should use `@string` resource"
+        errorLine1="        android:hint=&quot;password&quot;"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_config.xml"
+            line="86"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Autoconnect on startup&quot;, should use `@string` resource"
+        errorLine1="        android:text=&quot;Autoconnect on startup&quot;"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_config.xml"
+            line="100"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Connect to local server (No STUN)&quot;, should use `@string` resource"
+        errorLine1="        android:text=&quot;Connect to local server (No STUN)&quot;"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_config.xml"
+            line="110"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;LOAD FROM FILE&quot;, should use `@string` resource"
+        errorLine1="        android:text=&quot;LOAD FROM FILE&quot;"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_config.xml"
+            line="120"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;GSM&quot;, should use `@string` resource"
+        errorLine1="            android:text=&quot;GSM&quot;"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="18"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Network&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;Network&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="32"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;—&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;—&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="40"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Type&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;Type&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="54"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;—&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;—&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="62"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Signal&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;Signal&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="76"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;—&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;—&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="84"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Cell ID&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;Cell ID&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="98"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;—&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;—&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="106"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;IMEI&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;IMEI&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="120"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;—&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;—&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="128"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Phone&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;Phone&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="142"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;—&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;—&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="150"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;WiFi&quot;, should use `@string` resource"
+        errorLine1="            android:text=&quot;WiFi&quot;"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="166"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Network&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;Network&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="180"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;—&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;—&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="188"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Band&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;Band&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="202"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;—&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;—&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="210"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Signal&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;Signal&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="224"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;—&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;—&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="232"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Local IP&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;Local IP&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="246"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;—&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;—&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="254"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Internet&quot;, should use `@string` resource"
+        errorLine1="            android:text=&quot;Internet&quot;"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="270"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Public IP&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;Public IP&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="284"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;detecting…&quot;, should use `@string` resource"
+        errorLine1="                android:text=&quot;detecting…&quot;"
+        errorLine2="                ~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="292"
+            column="17"/>
+    </issue>
+
+    <issue
+        id="HardcodedText"
+        message="Hardcoded string &quot;Check Gateway Support&quot;, should use `@string` resource"
+        errorLine1="            android:text=&quot;Check Gateway Support&quot;"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/res/layout/dialog_info.xml"
+            line="309"
+            column="13"/>
+    </issue>
+
+</issues>

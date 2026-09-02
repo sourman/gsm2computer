@@ -1,0 +1,302 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/background">
+
+    <!-- ═══ Main tabbed layout ═══ -->
+    <LinearLayout
+        android:id="@+id/tabbedRoot"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
+
+        <!-- Fragment host: the three tabs (Dialer/Calls/Settings) are added here and
+             toggled with show()/hide() to preserve the legacy all-tabs-live semantics. -->
+        <FrameLayout
+            android:id="@+id/tabContent"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <!-- ═══ Bottom tab bar (IDs preserved from legacy layout) ═══ -->
+        <LinearLayout
+            android:id="@+id/bottomTabBar"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:orientation="horizontal"
+            android:background="@color/surface"
+            android:elevation="8dp"
+            android:gravity="center_vertical">
+
+            <!-- Dialer tab -->
+            <LinearLayout
+                android:id="@+id/tabBtnDialer"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:gravity="center"
+                android:background="?attr/selectableItemBackground"
+                android:clickable="true"
+                android:focusable="true">
+
+                <ImageView
+                    android:id="@+id/tabIconDialer"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:src="@drawable/ic_tab_dialer"
+                    android:tint="@color/primary" />
+                <TextView
+                    android:id="@+id/tabLabelDialer"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Dialer"
+                    android:textSize="11sp"
+                    android:textColor="@color/primary" />
+            </LinearLayout>
+
+            <!-- Calls tab -->
+            <LinearLayout
+                android:id="@+id/tabBtnCalls"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:gravity="center"
+                android:background="?attr/selectableItemBackground"
+                android:clickable="true"
+                android:focusable="true">
+
+                <ImageView
+                    android:id="@+id/tabIconCalls"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:src="@drawable/ic_tab_calls"
+                    android:tint="@color/text_hint" />
+                <TextView
+                    android:id="@+id/tabLabelCalls"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Calls"
+                    android:textSize="11sp"
+                    android:textColor="@color/text_hint" />
+            </LinearLayout>
+
+            <!-- Settings tab -->
+            <LinearLayout
+                android:id="@+id/tabBtnSettings"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:orientation="vertical"
+                android:gravity="center"
+                android:background="?attr/selectableItemBackground"
+                android:clickable="true"
+                android:focusable="true">
+
+                <ImageView
+                    android:id="@+id/tabIconSettings"
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:src="@drawable/ic_tab_settings"
+                    android:tint="@color/text_hint" />
+                <TextView
+                    android:id="@+id/tabLabelSettings"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Settings"
+                    android:textSize="11sp"
+                    android:textColor="@color/text_hint" />
+            </LinearLayout>
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- ═══ Full-screen in-call overlay (above everything, hidden by default) ═══ -->
+    <LinearLayout
+        android:id="@+id/inCallView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:background="@color/background"
+        android:visibility="gone"
+        android:gravity="center_horizontal">
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <TextView
+            android:id="@+id/tvInCallStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Calling..."
+            android:textSize="16sp"
+            android:textColor="@color/text_secondary" />
+
+        <TextView
+            android:id="@+id/tvInCallNumber"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="32sp"
+            android:textColor="@color/text_primary"
+            android:fontFamily="monospace"
+            android:gravity="center"
+            android:paddingVertical="16dp"
+            android:paddingHorizontal="24dp"
+            android:maxLines="1"
+            android:autoSizeTextType="uniform"
+            android:autoSizeMinTextSize="18sp"
+            android:autoSizeMaxTextSize="32sp" />
+
+        <TextView
+            android:id="@+id/tvInCallTimer"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="00:00"
+            android:textSize="48sp"
+            android:textColor="@color/text_primary"
+            android:fontFamily="monospace"
+            android:paddingVertical="24dp"
+            android:visibility="gone" />
+
+        <!-- In-Call Controls (Mute, Keypad, Speaker) -->
+        <LinearLayout
+            android:id="@+id/llInCallControls"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:layout_marginTop="16dp"
+            android:layout_marginBottom="16dp"
+            android:visibility="gone">
+
+            <Button
+                android:id="@+id/btnInCallMute"
+                android:layout_width="80dp"
+                android:layout_height="80dp"
+                android:layout_margin="16dp"
+                android:text="MUTE"
+                android:textSize="12sp"
+                android:textColor="@color/text_primary"
+                android:backgroundTint="#333333" />
+
+            <Button
+                android:id="@+id/btnInCallKeypadToggle"
+                android:layout_width="80dp"
+                android:layout_height="80dp"
+                android:layout_margin="16dp"
+                android:text="KEYPAD"
+                android:textSize="12sp"
+                android:textColor="@color/text_primary"
+                android:backgroundTint="#333333" />
+
+            <Button
+                android:id="@+id/btnInCallSpeaker"
+                android:layout_width="80dp"
+                android:layout_height="80dp"
+                android:layout_margin="16dp"
+                android:text="SPEAKER"
+                android:textSize="12sp"
+                android:textColor="@color/text_primary"
+                android:backgroundTint="#333333" />
+        </LinearLayout>
+
+        <!-- Hidden In-Call Keypad for DTMF -->
+        <LinearLayout
+            android:id="@+id/llInCallKeypad"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingHorizontal="32dp"
+            android:visibility="gone">
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="16dp">
+                <TextView android:id="@+id/btnDtmf1" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="1" />
+                <TextView android:id="@+id/btnDtmf2" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="2" />
+                <TextView android:id="@+id/btnDtmf3" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="3" />
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="16dp">
+                <TextView android:id="@+id/btnDtmf4" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="4" />
+                <TextView android:id="@+id/btnDtmf5" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="5" />
+                <TextView android:id="@+id/btnDtmf6" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="6" />
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="16dp">
+                <TextView android:id="@+id/btnDtmf7" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="7" />
+                <TextView android:id="@+id/btnDtmf8" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="8" />
+                <TextView android:id="@+id/btnDtmf9" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="9" />
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginBottom="16dp">
+                <TextView android:id="@+id/btnDtmfStar" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="*" />
+                <TextView android:id="@+id/btnDtmf0" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="0" />
+                <TextView android:id="@+id/btnDtmfHash" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="#" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <LinearLayout
+            android:id="@+id/llIncomingActions"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginHorizontal="24dp"
+            android:layout_marginBottom="32dp"
+            android:visibility="gone">
+
+            <Button
+                android:id="@+id/btnInCallReject"
+                android:layout_width="0dp"
+                android:layout_height="64dp"
+                android:layout_weight="1"
+                android:layout_marginEnd="8dp"
+                android:text="REJECT"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                android:textColor="#FFFFFF"
+                android:backgroundTint="#DC2626"
+                android:minHeight="0dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp" />
+
+            <Button
+                android:id="@+id/btnInCallAnswer"
+                android:layout_width="0dp"
+                android:layout_height="64dp"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:text="ANSWER"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                android:textColor="#FFFFFF"
+                android:backgroundTint="#16A34A"
+                android:minHeight="0dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/btnInCallEnd"
+            android:layout_width="match_parent"
+            android:layout_height="64dp"
+            android:layout_marginHorizontal="24dp"
+            android:layout_marginBottom="32dp"
+            android:text="END CALL"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF"
+            android:backgroundTint="#DC2626"
+            android:minHeight="0dp"
+            android:insetTop="0dp"
+            android:insetBottom="0dp" />
+    </LinearLayout>
+
+</FrameLayout>
+

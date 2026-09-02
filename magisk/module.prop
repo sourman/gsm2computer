@@ -1,0 +1,6 @@
+id=gsm2computer-bridge
+name=GSM2Computer Bridge
+version=v0.1.0
+versionCode=1
+author=gsm2computer
+description=Priv-app permissions and audio tooling for the GSM2Computer bridge (telephony audio capture on rooted Android)

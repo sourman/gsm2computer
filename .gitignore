@@ -1,0 +1,24 @@
+# Build outputs
+*.apk
+gateway-magisk.zip
+magisk/system/priv-app/Gateway/
+!magisk/system/priv-app/PermissionController/
+local.properties
+.env
+.env.build
+recordings/
+
+# Gradle
+.gradle/
+build/
+app/build/
+
+
+# Python / Node tooling
+.venv-signalwire/
+hub-token-worker/node_modules/
+
+# IDE
+.idea/
+*.iml
+.vscode/

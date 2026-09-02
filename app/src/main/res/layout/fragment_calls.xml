@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Calls tab content. Extracted verbatim from activity_main.xml's tabCalls block. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/tabCalls"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#111827">
+
+    <!-- Filter + clear toolbar: 3 icon buttons -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:paddingHorizontal="8dp"
+        android:paddingTop="10dp"
+        android:paddingBottom="8dp">
+
+        <ImageButton
+            android:id="@+id/btnFilterIn"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_weight="1"
+            android:src="@drawable/ic_call_incoming"
+            android:scaleType="centerInside"
+            android:backgroundTint="@color/primary"
+            android:layout_marginHorizontal="4dp"
+            android:contentDescription="Incoming"
+            style="?attr/borderlessButtonStyle" />
+
+        <ImageButton
+            android:id="@+id/btnFilterOut"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_weight="1"
+            android:src="@drawable/ic_call_outgoing"
+            android:scaleType="centerInside"
+            android:backgroundTint="#374151"
+            android:layout_marginHorizontal="4dp"
+            android:contentDescription="Outgoing"
+            style="?attr/borderlessButtonStyle" />
+
+        <ImageButton
+            android:id="@+id/btnCallLogClear"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_weight="1"
+            android:src="@drawable/ic_trash"
+            android:scaleType="centerInside"
+            android:backgroundTint="#374151"
+            android:layout_marginHorizontal="4dp"
+            android:contentDescription="Clear call log"
+            style="?attr/borderlessButtonStyle" />
+    </LinearLayout>
+
+    <!-- Call log entries (scrollable) -->
+    <ScrollView
+        android:id="@+id/callLogScroll"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <LinearLayout
+            android:id="@+id/callLogContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingHorizontal="8dp"
+            android:paddingBottom="16dp" />
+    </ScrollView>
+
+    <!-- Empty state text (shown when no calls) -->
+    <TextView
+        android:id="@+id/tvCallsEmpty"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:gravity="center"
+        android:text="No calls yet"
+        android:textSize="16sp"
+        android:textColor="#6B7280"
+        android:visibility="gone" />
+</LinearLayout>

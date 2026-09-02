@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GSM2Computer</string>
+    <string name="activity_title">GSM2Computer</string>
+    <string name="channel_name">GSM2Computer Bridge</string>
+    <string name="channel_description">Keeps the GSM-to-hub audio bridge ready</string>
+    <string name="notification_title">GSM2Computer</string>
+    <string name="notification_text_registered">Ready for calls</string>
+    <string name="notification_text_unregistered">Starting…</string>
+    <string name="notification_text_call">Call active</string>
+</resources>

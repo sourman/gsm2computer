@@ -1,0 +1,11 @@
+# NOTICE — lineage
+
+GSM2Computer is derived from the [gsm-sip-gateway](https://github.com/rmeehub/gsm-sip-gateway) project (upstream fork: [sourman/gsm-sip-gateway](https://github.com/sourman/gsm-sip-gateway)).
+
+The upstream repository did not ship an explicit `LICENSE` file at the time of the fork. This project is released under the MIT License (see `LICENSE`). If upstream rights holders prefer a different license, contact them before redistributing combined work.
+
+Key changes in this fork:
+
+- Removed SIP/SignalWire/Twilio signalling — the phone streams call audio to a configured hub over WebSocket.
+- Renamed package to `com.gsm2computer.bridge`.
+- Refocused product goal: a rooted Android phone relays GSM calls to a computer on the internet (future hub: WhatsApp Web, AI agents, etc.).

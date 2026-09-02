@@ -1,0 +1,7 @@
+name = "gsm2computer-hub-token"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+workers_dev = true
+
+[vars]
+STREAM_MODEL = "gpt-realtime"

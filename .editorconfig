@@ -1,0 +1,89 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 4
+insert_final_newline = true
+trim_trailing_whitespace = true
+max_line_length = 180
+
+[*.{kt,kts}]
+# ktlint rules. Bootstrap config: don't fail the build on existing style debt.
+ij_kotlin_imports_layout = *
+ktlint_standard_no-wildcard-imports = disabled
+ktlint_standard_package-name = enabled
+ktlint_standard_filename = enabled
+
+# Disabled for the bootstrap pass — existing code has many violations we are
+# not cleaning up here. Re-enable once the codebase has been reformatted.
+# Rule IDs match ktlint 1.x (standard:* rules).
+ktlint_standard_argument-list-wrapping = disabled
+ktlint_standard_blank-line-before-declaration = disabled
+ktlint_standard_chain-method-continuation = disabled
+ktlint_standard_chain-wrapping = disabled
+ktlint_standard_comment-spacing = disabled
+ktlint_standard_discouraged-comment-location = disabled
+ktlint_standard_enum-entry-name-case = disabled
+ktlint_standard_function-signature = disabled
+ktlint_standard_function-start-of-body-spacing = disabled
+ktlint_standard_if-else-bracing = disabled
+ktlint_standard_if-else-wrapping = disabled
+ktlint_standard_import-ordering = disabled
+ktlint_standard_indent = disabled
+ktlint_standard_keyword-spacing = disabled
+ktlint_standard_modifier-order = disabled
+ktlint_standard_multiline-expression = disabled
+ktlint_standard_multiline-expression-wrapping = disabled
+ktlint_standard_multiline-if-else = disabled
+ktlint_standard_multi-loop-range = disabled
+ktlint_standard_no-blank-line-before-rbrace = disabled
+ktlint_standard_no-blank-line-in-list = disabled
+ktlint_standard_no-consecutive-blank-lines = disabled
+ktlint_standard_no-empty-class-body = disabled
+ktlint_standard_no-empty-first-line-in-class-body = disabled
+ktlint_standard_no-empty-first-line-in-method-block = disabled
+ktlint_standard_no-line-break-after-else = disabled
+ktlint_standard_no-line-break-before-assignment = disabled
+ktlint_standard_no-multi-spaces = disabled
+ktlint_standard_no-semi = disabled
+ktlint_standard_no-trailing-spaces = disabled
+ktlint_standard_no-unused-imports = disabled
+ktlint_standard_op-sign = disabled
+ktlint_standard_op-spacing = disabled
+ktlint_standard_parameter-list-spacing = disabled
+ktlint_standard_parameter-list-wrapping = disabled
+ktlint_standard_property-naming = disabled
+ktlint_standard_spacing-around-angle-brackets = disabled
+ktlint_standard_spacing-around-colon = disabled
+ktlint_standard_spacing-around-comma = disabled
+ktlint_standard_spacing-around-curly = disabled
+ktlint_standard_spacing-around-dot = disabled
+ktlint_standard_spacing-around-keyword = disabled
+ktlint_standard_spacing-around-operators = disabled
+ktlint_standard_spacing-around-parentheses = disabled
+ktlint_standard_spacing-around-range-operator = disabled
+ktlint_standard_spacing-between-declarations-with-annotations = disabled
+ktlint_standard_spacing-between-declarations-with-comments = disabled
+ktlint_standard_statement-wrapping = disabled
+ktlint_standard_string-template = disabled
+ktlint_standard_string-template-indent = disabled
+ktlint_standard_trailing-comma-on-call-site = disabled
+ktlint_standard_trailing-comma-on-declaration-site = disabled
+ktlint_standard_try-catch-finally-spacing = disabled
+ktlint_standard_type-argument-comment-spacing = disabled
+ktlint_standard_type-parameter-comment-spacing = disabled
+ktlint_standard_value-argument-comment-spacing = disabled
+ktlint_standard_value-parameter-comment-spacing = disabled
+ktlint_standard_wrapping = disabled
+
+[*.{yml,yaml}]
+indent_size = 2
+max_line_length = off
+
+[*.md]
+max_line_length = off
+
+[*.{xml,pro}]
+max_line_length = off

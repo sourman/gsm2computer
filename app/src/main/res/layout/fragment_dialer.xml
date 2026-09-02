@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Dialer tab content. Extracted verbatim from activity_main.xml's tabDialer block. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/tabDialer"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#111827">
+
+    <!-- Phone number display -->
+    <TextView
+        android:id="@+id/tvDialNumber"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="32sp"
+        android:textColor="#FFFFFF"
+        android:gravity="center"
+        android:paddingVertical="24dp"
+        android:paddingHorizontal="16dp"
+        android:hint="Enter number"
+        android:textColorHint="#6B7280"
+        android:maxLines="1"
+        android:autoSizeTextType="uniform"
+        android:autoSizeMinTextSize="18sp"
+        android:autoSizeMaxTextSize="32sp" />
+
+    <!-- Keypad grid (fills available space, full width) -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:paddingHorizontal="8dp">
+
+        <!-- Row 1: 1 2 3 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <TextView android:id="@+id/btnDial1" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="1" />
+            <TextView android:id="@+id/btnDial2" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="2" />
+            <TextView android:id="@+id/btnDial3" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="3" />
+        </LinearLayout>
+
+        <!-- Row 2: 4 5 6 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <TextView android:id="@+id/btnDial4" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="4" />
+            <TextView android:id="@+id/btnDial5" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="5" />
+            <TextView android:id="@+id/btnDial6" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="6" />
+        </LinearLayout>
+
+        <!-- Row 3: 7 8 9 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <TextView android:id="@+id/btnDial7" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="7" />
+            <TextView android:id="@+id/btnDial8" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="8" />
+            <TextView android:id="@+id/btnDial9" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="9" />
+        </LinearLayout>
+
+        <!-- Row 4: * 0 # -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <TextView android:id="@+id/btnDialStar" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="*" />
+            <TextView android:id="@+id/btnDial0" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="0" />
+            <TextView android:id="@+id/btnDialHash" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="#" />
+        </LinearLayout>
+
+        <!-- Row 5: + call backspace -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView android:id="@+id/btnDialPlus" style="@style/DialButton" android:layout_width="0dp" android:layout_weight="1" android:text="+" />
+
+            <!-- Green call button -->
+            <ImageView
+                android:id="@+id/btnCall"
+                android:layout_width="0dp"
+                android:layout_height="64dp"
+                android:layout_weight="1"
+                android:layout_margin="4dp"
+                android:background="@drawable/dial_call_bg"
+                android:src="@drawable/ic_phone_call"
+                android:scaleType="center"
+                android:padding="16dp"
+                android:clickable="true"
+                android:focusable="true"
+                android:contentDescription="Call" />
+
+            <TextView
+                android:id="@+id/btnBackspace"
+                style="@style/DialButton"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:text="\u232B" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>
