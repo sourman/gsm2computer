@@ -54,6 +54,75 @@ input[type="url"] {
   color: #bdc1c6;
 }
 
+.call-path {
+  margin: 0 0 1rem;
+  padding: 0;
+  border: none;
+}
+
+.call-path legend {
+  font-size: 0.85rem;
+  color: #bdc1c6;
+  margin-bottom: 0.45rem;
+}
+
+.segmented {
+  display: inline-flex;
+  border: 1px solid #3c4043;
+  border-radius: 0.4rem;
+  overflow: hidden;
+  background: #0b0d12;
+}
+
+.segment {
+  display: flex;
+  margin: 0;
+  cursor: pointer;
+}
+
+.segment input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.segment span {
+  display: block;
+  padding: 0.45rem 1.1rem;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #9aa0a6;
+  user-select: none;
+  transition: background 80ms, color 80ms;
+}
+
+.segment input:checked + span {
+  background: #1a73e8;
+  color: #fff;
+}
+
+.segment input:focus-visible + span {
+  outline: 2px solid #8ab4f8;
+  outline-offset: -2px;
+}
+
+.segment input:disabled + span {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.call-path-hint {
+  margin: 0.45rem 0 0;
+  font-size: 0.78rem;
+  color: #9aa0a6;
+}
+
+.call-path-hint code {
+  font-size: 0.76rem;
+  color: #bdc1c6;
+}
+
 .buttons {
   display: flex;
   gap: 0.75rem;
@@ -116,6 +185,68 @@ button {
   font-size: 0.95rem;
   font-weight: 600;
   color: #bdc1c6;
+}
+
+.stereo-meter {
+  display: grid;
+  grid-template-columns: 7.5rem 1fr;
+  align-items: center;
+  gap: 0.65rem;
+  margin-bottom: 0.55rem;
+}
+
+.stereo-meter:last-child {
+  margin-bottom: 0;
+}
+
+.meter-channels {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.meter-channel {
+  display: grid;
+  grid-template-columns: 1.1rem 1fr;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.channel-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #9aa0a6;
+  text-align: center;
+}
+
+.meter-channel[data-channel="l"] .meter-fill {
+  background: linear-gradient(90deg, #1a73e8 0%, #8ab4f8 70%, #fdd663 92%, #f28b82 100%);
+}
+
+.meter-channel[data-channel="r"] .meter-fill {
+  background: linear-gradient(90deg, #e8710a 0%, #fdd663 70%, #fdd663 92%, #f28b82 100%);
+}
+
+.meter-channel[data-channel="l"].meter-silent .meter-fill,
+.meter-channel[data-channel="r"].meter-silent .meter-fill {
+  background: #3c4043;
+}
+
+.meter-channel[data-channel="l"].meter-hot .meter-fill {
+  background: linear-gradient(90deg, #8ab4f8 0%, #f28b82 100%);
+}
+
+.meter-channel[data-channel="r"].meter-hot .meter-fill {
+  background: linear-gradient(90deg, #fdd663 0%, #f28b82 100%);
+}
+
+.stereo-meter.meter-inactive {
+  opacity: 0.4;
+}
+
+.stereo-meter.meter-inactive .meter-fill {
+  background: #3c4043;
+  width: 0% !important;
 }
 
 .meter {

@@ -24,7 +24,7 @@ export class UlawPlayer {
     const pcm8k = decodeMulawToPcm16(mulaw);
     const floats = upsample8kToFloat(pcm8k, this.ctx.sampleRate);
     const buffer = this.ctx.createBuffer(1, floats.length, this.ctx.sampleRate);
-    buffer.copyToChannel(floats, 0);
+    buffer.copyToChannel(new Float32Array(floats), 0);
 
     const src = this.ctx.createBufferSource();
     src.buffer = buffer;

@@ -23,10 +23,13 @@ OPENCLAW_BUS = os.environ.get("GSM2COMPUTER_OPENCLAW_BUS", "openclaw_bus")
 OPENCLAW_MONITOR = os.environ.get("GSM2COMPUTER_OPENCLAW_MONITOR", "gsm_bus.monitor")
 OPENCLAW_SESSION_KEY = os.environ.get("GSM2COMPUTER_OPENCLAW_SESSION_KEY", "main")
 OPENCLAW_BRAIN = os.environ.get("GSM2COMPUTER_OPENCLAW_BRAIN", "agent-consult")
+OPENCLAW_TALK_MODEL = os.environ.get("GSM2COMPUTER_OPENCLAW_MODEL", "gpt-realtime-2.1-mini")
 OPENCLAW_SAMPLE_RATE = int(os.environ.get("GSM2COMPUTER_OPENCLAW_SAMPLE_RATE", "24000"))
 GSM_SAMPLE_RATE = int(os.environ.get("GSM2COMPUTER_AUDIO_RATE", "8000"))
 # 20 ms PCM16 mono frames at 24 kHz.
 AUDIO_CHUNK_BYTES = int(os.environ.get("GSM2COMPUTER_OPENCLAW_CHUNK_BYTES", str(OPENCLAW_SAMPLE_RATE * 2 // 50)))
+# Match OpenClaw Control UI: at most 4 unanswered appendAudio RPCs, then drop.
+APPEND_QUEUE_MAX = int(os.environ.get("GSM2COMPUTER_OPENCLAW_APPEND_QUEUE", "4"))
 
 
 def load_gateway_token() -> str:
@@ -181,6 +184,7 @@ class OpenClawTalkBridge:
         monitor: str = OPENCLAW_MONITOR,
         session_key: str = OPENCLAW_SESSION_KEY,
         brain: str = OPENCLAW_BRAIN,
+        model: str = OPENCLAW_TALK_MODEL,
         sample_rate: int = OPENCLAW_SAMPLE_RATE,
         mic_source: str = "pipewire",
         gsm_rate: int = GSM_SAMPLE_RATE,
@@ -191,6 +195,7 @@ class OpenClawTalkBridge:
         self.monitor = monitor
         self.session_key = session_key
         self.brain = brain
+        self.model = model
         self.sample_rate = sample_rate
         self.mic_source = mic_source
         self.gsm_rate = gsm_rate
@@ -201,9 +206,13 @@ class OpenClawTalkBridge:
         self._record_task: Optional[asyncio.Task] = None
         self._playback_queue: Optional[asyncio.Queue[Optional[bytes]]] = None
         self._playback_task: Optional[asyncio.Task] = None
+        self._append_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue(maxsize=APPEND_QUEUE_MAX)
+        self._append_task: Optional[asyncio.Task] = None
+        self._append_dropped = 0
         self._mic_buffer = bytearray()
         self._mic_resample_state: Optional[tuple] = None
         self._closed = False
+        self._audio_frames = 0
 
     async def start(self) -> None:
         if self._client:
@@ -218,18 +227,23 @@ class OpenClawTalkBridge:
                 "transport": "gateway-relay",
                 "brain": self.brain,
                 "sessionKey": self.session_key,
+                "model": self.model,
             },
         )
         self._session_id = payload.get("sessionId")
         audio = payload.get("audio") or {}
         LOG.info(
-            "talk session started sessionId=%s in=%sHz out=%sHz",
+            "talk session started sessionId=%s model=%s in=%sHz out=%sHz",
             self._session_id,
+            payload.get("model") or self.model,
             audio.get("inputSampleRateHz"),
             audio.get("outputSampleRateHz"),
         )
 
         self._client.on_event("talk.event", self._on_talk_event)
+        self._append_queue = asyncio.Queue(maxsize=APPEND_QUEUE_MAX)
+        self._append_dropped = 0
+        self._append_task = asyncio.create_task(self._append_worker())
         await self._start_pipewire()
         if self.mic_source == "pipewire":
             self._record_task = asyncio.create_task(self._pump_mic_pipewire())
@@ -246,7 +260,31 @@ class OpenClawTalkBridge:
         while len(self._mic_buffer) >= AUDIO_CHUNK_BYTES:
             chunk = bytes(self._mic_buffer[:AUDIO_CHUNK_BYTES])
             del self._mic_buffer[:AUDIO_CHUNK_BYTES]
-            asyncio.create_task(self._append_audio(chunk))
+            self._enqueue_append(chunk)
+
+    def _enqueue_append(self, chunk: bytes) -> None:
+        if self._closed:
+            return
+        q = self._append_queue
+        if q.full():
+            try:
+                q.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            self._append_dropped += 1
+            if self._append_dropped == 1 or self._append_dropped % 50 == 0:
+                LOG.warning("appendAudio queue full; dropped %s oldest frames", self._append_dropped)
+        try:
+            q.put_nowait(chunk)
+        except asyncio.QueueFull:
+            pass
+
+    async def _append_worker(self) -> None:
+        while not self._closed:
+            chunk = await self._append_queue.get()
+            if chunk is None:
+                return
+            await self._append_audio(chunk)
 
     async def _append_audio(self, chunk: bytes) -> None:
         if self._closed or not self._client or not self._session_id:
@@ -368,10 +406,14 @@ class OpenClawTalkBridge:
     async def _on_talk_event(self, payload: dict) -> None:
         if self._closed or not self._playback_queue:
             return
-        if payload.get("type") == "clear":
+        # Gateway wraps relay frames: { voiceSessionId, talkEvent: { type, audioBase64 } }
+        event = payload.get("talkEvent") if isinstance(payload.get("talkEvent"), dict) else payload
+        etype = event.get("type")
+        if etype == "clear":
+            LOG.info("talk.event clear — restarting playback")
             await self._restart_playback()
             return
-        audio_b64 = payload.get("audioBase64")
+        audio_b64 = event.get("audioBase64") or payload.get("audioBase64")
         if not audio_b64:
             return
         try:
@@ -379,6 +421,9 @@ class OpenClawTalkBridge:
         except Exception:
             return
         if pcm:
+            self._audio_frames += 1
+            if self._audio_frames == 1 or self._audio_frames % 50 == 0:
+                LOG.info("talk.event audio frames=%s bytes=%s", self._audio_frames, len(pcm))
             self._playback_queue.put_nowait(pcm)
 
     async def stop(self) -> None:
@@ -397,6 +442,17 @@ class OpenClawTalkBridge:
             except asyncio.CancelledError:
                 pass
             self._record_task = None
+        try:
+            self._append_queue.put_nowait(None)
+        except asyncio.QueueFull:
+            pass
+        if self._append_task:
+            self._append_task.cancel()
+            try:
+                await self._append_task
+            except asyncio.CancelledError:
+                pass
+            self._append_task = None
         if self._playback_queue:
             self._playback_queue.put_nowait(None)
         if self._playback_task:

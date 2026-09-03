@@ -3,11 +3,20 @@
 set -euo pipefail
 
 unlink_all() {
-  pw-link -l 2>/dev/null | grep -E "gsm_bus|openclaw_bus|whatsapp_bus|telegram_bus" | grep "|->" | while read -r line; do
-    src=$(echo "$line" | sed "s/ *|->.*//")
-    dst=$(echo "$line" | sed "s/.*|-> //")
-    pw-link -d "$src" "$dst" 2>/dev/null || true
-  done || true
+  # pw-link -l is two lines per edge: "src" then "  |-> dst"
+  local src="" line dst
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == *"|->"* ]]; then
+      dst="${line#*|-> }"
+      dst="${dst#"${dst%%[![:space:]]*}"}"
+      if [[ -n "$src" && -n "$dst" ]]; then
+        pw-link -d "$src" "$dst" 2>/dev/null || true
+      fi
+    else
+      src="${line#"${line%%[![:space:]]*}"}"
+      src="${src%"${src##*[![:space:]]}"}"
+    fi
+  done < <(pw-link -l 2>/dev/null | grep -E "gsm_bus|openclaw_bus|whatsapp_bus|telegram_bus|\\|->" || true)
 }
 
 link_stereo() {

@@ -15,10 +15,10 @@ Open **http://localhost:5173** in Chrome or Firefox.
 ## Usage
 
 1. Leave the default hub URL (`http://100.101.181.110:8787`) or point at another hub.
-2. **Hub loopback** (default): connects to `ws://…/loopback` — hub echoes μ-law without OpenClaw. Use with test tone or mic to sanity-check the wire.
-3. Uncheck loopback for the OpenClaw path (downlink is agent speech on `openclaw_bus`, not echo).
+2. **Call path** (default **Loopback**): connects to `ws://…/loopback` — hub echoes μ-law without OpenClaw. Use with test tone or mic to sanity-check the wire.
+3. Select **OpenClaw** for the agent path (downlink is agent speech on `openclaw_bus`, not echo).
 4. Click **Start call** — mic permission when not using test tone; fetches `/token`, opens WebSocket, waits for `session.updated`.
-5. Level meters show mic, tone uplink, hub downlink, and local sidetone activity.
+5. Level meters show L/R bars for mic, tone uplink, hub downlink, and local sidetone.
 6. Click **End call** to close cleanly.
 
 The event log shows WS status, `session.updated`, errors, and byte counters.

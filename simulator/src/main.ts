@@ -2,11 +2,11 @@ import { mulawEnergy } from "./audio-level";
 import { startMicCapture } from "./audio-capture";
 import { UlawPlayer } from "./audio-playback";
 import { HubClient } from "./hub-client";
-import { LevelMeter } from "./level-meter";
+import { StereoMeter } from "./level-meter";
 import { synthToneFrame } from "./synth-tone";
 
 const hubUrlInput = document.getElementById("hub-url") as HTMLInputElement;
-const loopbackModeInput = document.getElementById("loopback-mode") as HTMLInputElement;
+const callPathInputs = document.querySelectorAll<HTMLInputElement>('input[name="call-path"]');
 const toneModeInput = document.getElementById("tone-mode") as HTMLInputElement;
 const startBtn = document.getElementById("start-btn") as HTMLButtonElement;
 const endBtn = document.getElementById("end-btn") as HTMLButtonElement;
@@ -16,10 +16,10 @@ const micStatusEl = document.getElementById("mic-status") as HTMLElement;
 const bytesSentEl = document.getElementById("bytes-sent") as HTMLElement;
 const bytesRecvEl = document.getElementById("bytes-recv") as HTMLElement;
 
-const micMeter = new LevelMeter(document.getElementById("meter-mic")!);
-const toneMeter = new LevelMeter(document.getElementById("meter-tone")!);
-const downlinkMeter = new LevelMeter(document.getElementById("meter-downlink")!);
-const sidetoneMeter = new LevelMeter(document.getElementById("meter-sidetone")!);
+const micMeter = new StereoMeter(document.getElementById("meter-mic")!);
+const toneMeter = new StereoMeter(document.getElementById("meter-tone")!);
+const downlinkMeter = new StereoMeter(document.getElementById("meter-downlink")!);
+const sidetoneMeter = new StereoMeter(document.getElementById("meter-sidetone")!);
 
 let client: HubClient | null = null;
 let mic: Awaited<ReturnType<typeof startMicCapture>> | null = null;
@@ -27,6 +27,11 @@ let player: UlawPlayer | null = null;
 let tonePhase = 0;
 let bytesSent = 0;
 let bytesRecv = 0;
+
+function getCallPath(): "loopback" | "openclaw" {
+  const selected = document.querySelector<HTMLInputElement>('input[name="call-path"]:checked');
+  return selected?.value === "openclaw" ? "openclaw" : "loopback";
+}
 
 function log(message: string, level: "info" | "ok" | "warn" | "err" = "info"): void {
   const ts = new Date().toISOString().slice(11, 23);
@@ -41,7 +46,9 @@ function setUiInCall(inCall: boolean): void {
   startBtn.disabled = inCall;
   endBtn.disabled = !inCall;
   hubUrlInput.disabled = inCall;
-  loopbackModeInput.disabled = inCall;
+  callPathInputs.forEach((input) => {
+    input.disabled = inCall;
+  });
   toneModeInput.disabled = inCall;
 }
 
@@ -53,7 +60,7 @@ async function startCall(): Promise<void> {
   }
 
   const useTone = toneModeInput.checked;
-  const loopback = loopbackModeInput.checked;
+  const loopback = getCallPath() === "loopback";
   bytesSent = 0;
   bytesRecv = 0;
   tonePhase = 0;
@@ -88,12 +95,13 @@ async function startCall(): Promise<void> {
           "ok",
         );
       },
-      onAudioDelta: (mulaw) => {
-        const energy = mulawEnergy(mulaw);
-        downlinkMeter.setEnergy(energy);
-        if (loopback || energy > 0.01) {
-          player?.playMulaw(mulaw);
+      onAudioDelta: (mulaw, channels) => {
+        if (channels) {
+          downlinkMeter.setStereoLevel(channels.l, channels.r);
+        } else {
+          downlinkMeter.setEnergy(mulawEnergy(mulaw));
         }
+        player?.playMulaw(mulaw);
       },
       onBytesSent: (n) => {
         bytesSent += n;
@@ -131,9 +139,9 @@ async function startCall(): Promise<void> {
       });
     } else {
       mic = await startMicCapture(
-        (chunk) => {
+        (chunk, levels) => {
           client?.enqueueMulaw(chunk);
-          micMeter.setEnergy(mulawEnergy(chunk));
+          micMeter.setStereoEnergy(levels.l, levels.r);
         },
         { disableEchoCancellation: loopback },
       );
@@ -173,5 +181,5 @@ async function endCall(): Promise<void> {
 startBtn.addEventListener("click", () => void startCall());
 endBtn.addEventListener("click", () => void endCall());
 
-log("Ready — Hub loopback + test tone = hear 440 Hz echoed (no OpenClaw needed)", "info");
-log("OpenClaw mode: uncheck loopback; downlink is agent speech only", "info");
+log("Ready — Loopback + test tone = hear 440 Hz echoed (no OpenClaw needed)", "info");
+log("OpenClaw mode: select OpenClaw call path; downlink is agent speech only", "info");

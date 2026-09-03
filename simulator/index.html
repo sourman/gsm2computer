@@ -18,10 +18,25 @@
           Hub URL
           <input id="hub-url" type="url" value="http://100.101.181.110:8787" />
         </label>
-        <label class="checkbox">
-          <input id="loopback-mode" type="checkbox" checked />
-          Hub loopback (no OpenClaw — hear your audio echoed from gsm_bus)
-        </label>
+
+        <fieldset class="call-path" id="call-path">
+          <legend>Call path</legend>
+          <div class="segmented" role="radiogroup" aria-label="Call path">
+            <label class="segment">
+              <input type="radio" name="call-path" value="loopback" checked />
+              <span>Loopback</span>
+            </label>
+            <label class="segment">
+              <input type="radio" name="call-path" value="openclaw" />
+              <span>OpenClaw</span>
+            </label>
+          </div>
+          <p class="call-path-hint">
+            Loopback → <code>ws://…/loopback</code> (hub echoes μ-law). OpenClaw →
+            <code>ws://…/</code> (agent speech downlink).
+          </p>
+        </fieldset>
+
         <label class="checkbox">
           <input id="tone-mode" type="checkbox" />
           Test tone instead of mic (440 Hz)
@@ -41,28 +56,72 @@
 
       <section class="audio-meters" aria-label="Audio level meters">
         <h2>Audio levels</h2>
-        <div class="meter" id="meter-mic">
+        <div class="stereo-meter" id="meter-mic">
           <span class="meter-label">Mic uplink</span>
-          <div class="meter-track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-            <div class="meter-fill"></div>
+          <div class="meter-channels">
+            <div class="meter-channel" data-channel="l">
+              <span class="channel-label">L</span>
+              <div class="meter-track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div class="meter-fill"></div>
+              </div>
+            </div>
+            <div class="meter-channel" data-channel="r">
+              <span class="channel-label">R</span>
+              <div class="meter-track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div class="meter-fill"></div>
+              </div>
+            </div>
           </div>
         </div>
-        <div class="meter" id="meter-tone">
+        <div class="stereo-meter" id="meter-tone">
           <span class="meter-label">Test tone uplink</span>
-          <div class="meter-track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-            <div class="meter-fill"></div>
+          <div class="meter-channels">
+            <div class="meter-channel" data-channel="l">
+              <span class="channel-label">L</span>
+              <div class="meter-track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div class="meter-fill"></div>
+              </div>
+            </div>
+            <div class="meter-channel" data-channel="r">
+              <span class="channel-label">R</span>
+              <div class="meter-track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div class="meter-fill"></div>
+              </div>
+            </div>
           </div>
         </div>
-        <div class="meter" id="meter-downlink">
+        <div class="stereo-meter" id="meter-downlink">
           <span class="meter-label">Downlink (hub)</span>
-          <div class="meter-track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-            <div class="meter-fill"></div>
+          <div class="meter-channels">
+            <div class="meter-channel" data-channel="l">
+              <span class="channel-label">L</span>
+              <div class="meter-track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div class="meter-fill"></div>
+              </div>
+            </div>
+            <div class="meter-channel" data-channel="r">
+              <span class="channel-label">R</span>
+              <div class="meter-track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div class="meter-fill"></div>
+              </div>
+            </div>
           </div>
         </div>
-        <div class="meter" id="meter-sidetone">
+        <div class="stereo-meter" id="meter-sidetone">
           <span class="meter-label">Local sidetone</span>
-          <div class="meter-track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-            <div class="meter-fill"></div>
+          <div class="meter-channels">
+            <div class="meter-channel" data-channel="l">
+              <span class="channel-label">L</span>
+              <div class="meter-track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div class="meter-fill"></div>
+              </div>
+            </div>
+            <div class="meter-channel" data-channel="r">
+              <span class="channel-label">R</span>
+              <div class="meter-track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div class="meter-fill"></div>
+              </div>
+            </div>
           </div>
         </div>
       </section>

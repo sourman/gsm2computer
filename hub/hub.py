@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import audioop
 import base64
 import hashlib
 import json
@@ -32,6 +33,7 @@ OPENCLAW_TALK_ON_CALL = os.environ.get("GSM2COMPUTER_OPENCLAW_TALK", "1").lower(
     "off",
 )
 RECORD_CHUNK = int(os.environ.get("GSM2COMPUTER_RECORD_CHUNK", "160"))
+ULAW_BIAS = 0x84
 
 LOG = logging.getLogger("gsm2computer-hub")
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -170,6 +172,43 @@ async def run_switchboard(*args: str) -> tuple[int, str, str]:
     return proc.returncode or 0, stdout_b.decode("utf-8", errors="replace"), stderr_b.decode("utf-8", errors="replace")
 
 
+async def resolve_pipewire_record_target(name: str) -> str:
+    """pw-record --target wants a PipeWire object.serial.
+
+    Pulse names like openclaw_bus.monitor are not nodes, so --target falls
+    through to the default source (AWS-Virtual-Microphone on safwat-eu).
+    pactl source/sink indices match object.serial for these null sinks.
+    """
+    if name.isdigit():
+        return name
+
+    async def _pactl_short(kind: str) -> str:
+        proc = await asyncio.create_subprocess_exec(
+            "pactl",
+            "list",
+            kind,
+            "short",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_b, stderr_b = await proc.communicate()
+        if proc.returncode:
+            err = stderr_b.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"pactl list {kind} failed: {err or proc.returncode}")
+        return stdout_b.decode("utf-8", errors="replace")
+
+    for line in (await _pactl_short("sources")).splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == name:
+            return parts[0]
+    sink = name[: -len(".monitor")] if name.endswith(".monitor") else name
+    for line in (await _pactl_short("sinks")).splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == sink:
+            return parts[0]
+    raise RuntimeError(f"PipeWire record target not found: {name}")
+
+
 async def parse_switchboard_links() -> list[dict[str, str]]:
     proc = await asyncio.create_subprocess_exec(
         "pw-link",
@@ -225,6 +264,45 @@ async def set_switchboard_mode(mode: str) -> dict:
     return state
 
 
+def _ulaw_decode_sample(pcmu: int) -> int:
+    b = (pcmu & 0xff) ^ 0xff
+    sign = b & 0x80
+    exponent = (b >> 4) & 0x07
+    mantissa = b & 0x0f
+    sample = ((mantissa << 3) + ULAW_BIAS) << exponent
+    sample -= ULAW_BIAS
+    return -sample if sign else sample
+
+
+def _ulaw_encode_sample(pcm: int) -> int:
+    sample = pcm
+    sign = (sample >> 8) & 0x80
+    if sign:
+        sample = -sample
+    if sample > 32635:
+        sample = 32635
+    sample += ULAW_BIAS
+    if sample > 32635:
+        sample = 32635
+    exponent = 0
+    while exponent < 7 and (sample >> (exponent + 8)) != 0:
+        exponent += 1
+    mantissa = (sample >> (exponent + 3)) & 0x0f
+    raw = (sign & 0x80) | (exponent << 4) | mantissa
+    return raw ^ 0xff
+
+
+def _mulaw_rms_energy(ulaw: bytes) -> float:
+    """RMS of decoded PCM / 32768 (~0–1; matches simulator mulawEnergy)."""
+    if not ulaw:
+        return 0.0
+    sum_sq = 0.0
+    for b in ulaw:
+        s = _ulaw_decode_sample(b) / 32768.0
+        sum_sq += s * s
+    return (sum_sq / len(ulaw)) ** 0.5
+
+
 def parse_sms_command(body: str) -> Optional[str]:
     text = (body or "").strip()
     if not text:
@@ -255,6 +333,10 @@ class PipewireBridge:
         record_downlink: bool = True,
     ) -> None:
         record_target = monitor or self.monitor
+        record_serial: Optional[str] = None
+        if record_downlink:
+            record_serial = await resolve_pipewire_record_target(record_target)
+            LOG.info("pw-record target %s -> serial %s", record_target, record_serial)
         self._playback = await asyncio.create_subprocess_exec(
             "pw-cat",
             "--playback",
@@ -271,23 +353,33 @@ class PipewireBridge:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
-        if record_downlink:
+        if record_serial is not None:
             self._record = await asyncio.create_subprocess_exec(
                 "pw-record",
+                "--media-category",
+                "Capture",
                 "--target",
-                record_target,
+                record_serial,
                 "--rate",
                 str(self.rate),
                 "--channels",
-                "1",
+                "2",
                 "--format",
-                "ulaw",
+                "s16",
                 "-",
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            self._record_task = asyncio.create_task(self._pump_out(ws_writer))
+            await asyncio.sleep(0.05)
+            if self._record.returncode is not None:
+                err = await self._record.stderr.read()
+                LOG.error(
+                    "pw-record 2ch s16 failed: %s",
+                    err.decode("utf-8", errors="replace").strip() or self._record.returncode,
+                )
+            else:
+                self._record_task = asyncio.create_task(self._pump_out(ws_writer))
         LOG.info(
             "pipewire bridge started sink=%s monitor=%s record=%s",
             self.sink,
@@ -297,22 +389,46 @@ class PipewireBridge:
 
     async def _pump_out(self, ws_writer: asyncio.StreamWriter) -> None:
         assert self._record and self._record.stdout
+        # 20 ms of stereo s16le at AUDIO_RATE.
+        read_size = RECORD_CHUNK * 2 * 2
+        nonzero = 0
         while not self._closed:
             try:
-                chunk = await self._record.stdout.read(RECORD_CHUNK)
+                chunk = await self._record.stdout.read(read_size)
             except Exception as exc:
                 LOG.warning("record read failed: %s", exc)
                 break
             if not chunk:
                 break
+            extra = len(chunk) % 4
+            if extra:
+                chunk = chunk[: len(chunk) - extra]
+            if not chunk:
+                continue
+            left = audioop.tomono(chunk, 2, 1, 0)
+            right = audioop.tomono(chunk, 2, 0, 1)
+            mono_pcm = audioop.tomono(chunk, 2, 0.5, 0.5)
+            energy_l = audioop.rms(left, 2) / 32768.0
+            energy_r = audioop.rms(right, 2) / 32768.0
+            if energy_l > 0.02 or energy_r > 0.02:
+                nonzero += 1
+                if nonzero == 1 or nonzero % 50 == 0:
+                    LOG.info("downlink energy l=%.3f r=%.3f", energy_l, energy_r)
             event = {
                 "type": "response.output_audio.delta",
-                "delta": base64.b64encode(chunk).decode("ascii"),
+                "delta": base64.b64encode(audioop.lin2ulaw(mono_pcm, 2)).decode("ascii"),
+                "channels": {"l": energy_l, "r": energy_r},
             }
             try:
                 await ws_send_text(ws_writer, json.dumps(event))
             except (ConnectionError, BrokenPipeError, asyncio.IncompleteReadError):
                 break
+        if self._record.returncode is None:
+            await self._record.wait()
+        if self._record.stderr:
+            err = await self._record.stderr.read()
+            if err:
+                LOG.error("pw-record stderr: %s", err.decode("utf-8", errors="replace").strip())
 
     async def write_in(self, ulaw: bytes) -> None:
         if self._closed or not ulaw:
@@ -438,9 +554,11 @@ async def handle_websocket(
                     ulaw = base64.b64decode(audio_b64, validate=False)
                     await bridge.write_in(ulaw)
                     if loopback:
+                        energy = _mulaw_rms_energy(ulaw)
                         echo = {
                             "type": "response.output_audio.delta",
                             "delta": base64.b64encode(ulaw).decode("ascii"),
+                            "channels": {"l": energy, "r": energy},
                         }
                         await ws_send_text(writer, json.dumps(echo))
                     elif openclaw_bridge is not None:

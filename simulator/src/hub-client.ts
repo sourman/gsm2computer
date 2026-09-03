@@ -1,10 +1,12 @@
 const FRAME_BYTES = 160; // 20 ms @ 8 kHz μ-law
 
+export type AudioChannels = { l: number; r: number };
+
 export type HubClientCallbacks = {
   onLog: (message: string, level?: "info" | "ok" | "warn" | "err") => void;
   onStatus: (status: string) => void;
   onSessionReady: () => void;
-  onAudioDelta: (mulaw: Uint8Array) => void;
+  onAudioDelta: (mulaw: Uint8Array, channels?: AudioChannels) => void;
   onBytesSent: (n: number) => void;
   onBytesReceived: (n: number) => void;
 };
@@ -123,14 +125,25 @@ export class HubClient {
   private handleMessage(text: string): void {
     let type = "";
     try {
-      const json = JSON.parse(text) as { type?: string; delta?: string };
+      const json = JSON.parse(text) as {
+        type?: string;
+        delta?: string;
+        channels?: { l?: number; r?: number };
+      };
       type = json.type ?? "";
       if (type === "response.output_audio.delta" && json.delta) {
         const bin = atob(json.delta);
         const mulaw = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i++) mulaw[i] = bin.charCodeAt(i);
         this.callbacks.onBytesReceived(mulaw.length);
-        this.callbacks.onAudioDelta(mulaw);
+        let channels: AudioChannels | undefined;
+        if (json.channels && typeof json.channels.l === "number" && typeof json.channels.r === "number") {
+          channels = {
+            l: Math.max(0, Math.min(1, json.channels.l)),
+            r: Math.max(0, Math.min(1, json.channels.r)),
+          };
+        }
+        this.callbacks.onAudioDelta(mulaw, channels);
         return;
       }
       if (type === "session.updated") {
