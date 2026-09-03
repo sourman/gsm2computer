@@ -86,6 +86,18 @@ class GatewayService : Service() {
             return
         }
 
+        notifStatusText = "Ready"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID,
+                buildNotification(NotifState.OK, "Ready"),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, buildNotification(NotifState.OK, "Ready"))
+        }
+
         if (!forceRestart) {
             MicCapabilityGuard.startMonitor(this) { isCallActive() }
             if (MicCapabilityGuard.requestRelaunchIfNeeded(this, "service-start", inCall = isCallActive())) {
@@ -113,17 +125,6 @@ class GatewayService : Service() {
         outgoingDurationSec = totals.outDurationSec
         currentCallStart = 0L
 
-        notifStatusText = "Ready"
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                buildNotification(NotifState.OK, "Ready"),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL or
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, buildNotification(NotifState.OK, "Ready"))
-        }
         acquireLocks()
 
         thread(name = "bridge-init") {

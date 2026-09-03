@@ -7,7 +7,7 @@ unlink_all() {
     src=$(echo "$line" | sed "s/ *|->.*//")
     dst=$(echo "$line" | sed "s/.*|-> //")
     pw-link -d "$src" "$dst" 2>/dev/null || true
-  done
+  done || true
 }
 
 link_stereo() {
@@ -29,6 +29,10 @@ case "${1:-status}" in
     link_stereo openclaw_bus gsm_bus
     echo "mode: gsm uplink (hub) + openclaw downlink -> gsm"
     ;;
+  loopback)
+    unlink_all
+    echo "mode: gsm loopback (uplink -> gsm_bus.monitor downlink, no OpenClaw)"
+    ;;
   conference)
     unlink_all
     link_stereo gsm_bus openclaw_bus
@@ -37,5 +41,5 @@ case "${1:-status}" in
     link_stereo openclaw_bus gsm_bus
     echo "mode: gsm + openclaw + whatsapp + telegram (partial mesh)"
     ;;
-  *) echo "usage: $0 {status|clear|openclaw|conference}"; exit 1 ;;
+  *) echo "usage: $0 {status|clear|openclaw|loopback|conference}"; exit 1 ;;
 esac

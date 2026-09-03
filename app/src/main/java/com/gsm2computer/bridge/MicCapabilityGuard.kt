@@ -46,7 +46,8 @@ object MicCapabilityGuard {
         val extra = MainActivity.EXTRA_MIC_CAPABILITY_RELAUNCH
         val cmd = "am start -n $component --ez $extra true --activity-brought-to-front"
         val result = RootShell.execForOutput(cmd, timeoutMs = 8000)
-        val failed = result.contains("Error", ignoreCase = true) ||
+        val failed = result.isBlank() ||
+            result.contains("Error", ignoreCase = true) ||
             result.contains("SecurityException", ignoreCase = true) ||
             result.contains("does not exist", ignoreCase = true)
         Log.i(TAG, "Root am start: ok=${!failed} [$result]")

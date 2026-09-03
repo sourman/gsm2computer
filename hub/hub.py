@@ -211,7 +211,7 @@ async def switchboard_state() -> dict:
 
 async def set_switchboard_mode(mode: str) -> dict:
     global current_mode
-    allowed = {"clear", "openclaw", "conference", "status"}
+    allowed = {"clear", "openclaw", "loopback", "conference", "status"}
     if mode not in allowed:
         return {"ok": False, "error": f"unknown mode {mode!r}", "allowed": sorted(allowed - {"status"})}
     rc, out, err = await run_switchboard(mode)
@@ -248,7 +248,12 @@ class PipewireBridge:
         self._record_task: Optional[asyncio.Task] = None
         self._closed = False
 
-    async def start(self, ws_writer: asyncio.StreamWriter, monitor: Optional[str] = None) -> None:
+    async def start(
+        self,
+        ws_writer: asyncio.StreamWriter,
+        monitor: Optional[str] = None,
+        record_downlink: bool = True,
+    ) -> None:
         record_target = monitor or self.monitor
         self._playback = await asyncio.create_subprocess_exec(
             "pw-cat",
@@ -266,23 +271,29 @@ class PipewireBridge:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
-        self._record = await asyncio.create_subprocess_exec(
-            "pw-record",
-            "--target",
-            record_target,
-            "--rate",
-            str(self.rate),
-            "--channels",
-            "1",
-            "--format",
-            "ulaw",
-            "-",
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        if record_downlink:
+            self._record = await asyncio.create_subprocess_exec(
+                "pw-record",
+                "--target",
+                record_target,
+                "--rate",
+                str(self.rate),
+                "--channels",
+                "1",
+                "--format",
+                "ulaw",
+                "-",
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            self._record_task = asyncio.create_task(self._pump_out(ws_writer))
+        LOG.info(
+            "pipewire bridge started sink=%s monitor=%s record=%s",
+            self.sink,
+            record_target if record_downlink else "off",
+            record_downlink,
         )
-        self._record_task = asyncio.create_task(self._pump_out(ws_writer))
-        LOG.info("pipewire bridge started sink=%s monitor=%s", self.sink, record_target)
 
     async def _pump_out(self, ws_writer: asyncio.StreamWriter) -> None:
         assert self._record and self._record.stdout
@@ -370,16 +381,25 @@ async def handle_websocket(
     writer.write(response.encode("ascii"))
     await writer.drain()
 
-    LOG.info("WebSocket connected path=%s", path)
-    if AUTO_MODE_ON_CALL:
+    loopback = path.strip("/") == "loopback" or path.startswith("/loopback")
+    LOG.info("WebSocket connected path=%s loopback=%s", path, loopback)
+    if loopback:
+        result = await set_switchboard_mode("loopback")
+        LOG.info("loopback call: %s", result.get("applied") or result.get("error"))
+    elif AUTO_MODE_ON_CALL:
         result = await set_switchboard_mode(AUTO_MODE_ON_CALL)
         LOG.info("auto mode on call: %s", result.get("applied") or result.get("error"))
 
     bridge = PipewireBridge(GSM_SINK, GSM_MONITOR, AUDIO_RATE)
     active_bridge = bridge
     openclaw_bridge: Optional[OpenClawTalkBridge] = None
-    downlink_monitor = OPENCLAW_DOWNLINK_MONITOR if OPENCLAW_TALK_ON_CALL else GSM_MONITOR
-    if OPENCLAW_TALK_ON_CALL and OpenClawTalkBridge is not None:
+    if loopback:
+        downlink_monitor = GSM_MONITOR
+    elif OPENCLAW_TALK_ON_CALL:
+        downlink_monitor = OPENCLAW_DOWNLINK_MONITOR
+    else:
+        downlink_monitor = GSM_MONITOR
+    if not loopback and OPENCLAW_TALK_ON_CALL and OpenClawTalkBridge is not None:
         try:
             openclaw_bridge = OpenClawTalkBridge(mic_source="hub")
             await openclaw_bridge.start()
@@ -388,7 +408,7 @@ async def handle_websocket(
         except Exception as exc:
             LOG.error("openclaw talk bridge failed to start: %s", exc)
     try:
-        await bridge.start(writer, monitor=downlink_monitor)
+        await bridge.start(writer, monitor=downlink_monitor, record_downlink=not loopback)
         session_ack = {
             "type": "session.updated",
             "session": {
@@ -417,7 +437,13 @@ async def handle_websocket(
                 if audio_b64:
                     ulaw = base64.b64decode(audio_b64, validate=False)
                     await bridge.write_in(ulaw)
-                    if openclaw_bridge is not None:
+                    if loopback:
+                        echo = {
+                            "type": "response.output_audio.delta",
+                            "delta": base64.b64encode(ulaw).decode("ascii"),
+                        }
+                        await ws_send_text(writer, json.dumps(echo))
+                    elif openclaw_bridge is not None:
                         openclaw_bridge.feed_gsm_ulaw(ulaw)
             else:
                 LOG.debug("ws event type=%s", etype)

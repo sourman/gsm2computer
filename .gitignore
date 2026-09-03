@@ -17,6 +17,8 @@ app/build/
 # Python / Node tooling
 .venv-signalwire/
 hub-token-worker/node_modules/
+simulator/node_modules/
+simulator/dist/
 
 # IDE
 .idea/

@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GSM Hub Call Simulator</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <main>
+      <h1>GSM Hub Call Simulator</h1>
+      <p class="subtitle">
+        Simulates the Android μ-law WebSocket call to the gsm2computer hub (Layer 3).
+      </p>
+
+      <section class="controls">
+        <label>
+          Hub URL
+          <input id="hub-url" type="url" value="http://100.101.181.110:8787" />
+        </label>
+        <label class="checkbox">
+          <input id="loopback-mode" type="checkbox" checked />
+          Hub loopback (no OpenClaw — hear your audio echoed from gsm_bus)
+        </label>
+        <label class="checkbox">
+          <input id="tone-mode" type="checkbox" />
+          Test tone instead of mic (440 Hz)
+        </label>
+        <div class="buttons">
+          <button id="start-btn" type="button">Start call</button>
+          <button id="end-btn" type="button" disabled>End call</button>
+        </div>
+      </section>
+
+      <section class="stats">
+        <div><span>Status</span><strong id="status">idle</strong></div>
+        <div><span>Mic streaming</span><strong id="mic-status">no</strong></div>
+        <div><span>Bytes sent</span><strong id="bytes-sent">0</strong></div>
+        <div><span>Bytes received</span><strong id="bytes-recv">0</strong></div>
+      </section>
+
+      <section class="audio-meters" aria-label="Audio level meters">
+        <h2>Audio levels</h2>
+        <div class="meter" id="meter-mic">
+          <span class="meter-label">Mic uplink</span>
+          <div class="meter-track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div class="meter-fill"></div>
+          </div>
+        </div>
+        <div class="meter" id="meter-tone">
+          <span class="meter-label">Test tone uplink</span>
+          <div class="meter-track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div class="meter-fill"></div>
+          </div>
+        </div>
+        <div class="meter" id="meter-downlink">
+          <span class="meter-label">Downlink (hub)</span>
+          <div class="meter-track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div class="meter-fill"></div>
+          </div>
+        </div>
+        <div class="meter" id="meter-sidetone">
+          <span class="meter-label">Local sidetone</span>
+          <div class="meter-track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div class="meter-fill"></div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Event log</h2>
+        <pre id="log"></pre>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
