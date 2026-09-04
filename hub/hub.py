@@ -11,9 +11,18 @@ import logging
 import os
 import re
 import signal
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, Tuple
+
+from pipewire_target import (
+    PipewireLinkError,
+    pw_cat_raw_args,
+    resolve_pipewire_playback_target,
+    resolve_pipewire_record_target,
+    wait_for_pipewire_link,
+)
 
 HOST = os.environ.get("GSM2COMPUTER_HUB_HOST", "100.101.181.110")
 PORT = int(os.environ.get("GSM2COMPUTER_HUB_PORT", "8787"))
@@ -34,6 +43,8 @@ OPENCLAW_TALK_ON_CALL = os.environ.get("GSM2COMPUTER_OPENCLAW_TALK", "1").lower(
 )
 RECORD_CHUNK = int(os.environ.get("GSM2COMPUTER_RECORD_CHUNK", "160"))
 ULAW_BIAS = 0x84
+TTS_ENERGY_WATCHDOG_S = float(os.environ.get("GSM2COMPUTER_TTS_ENERGY_WATCHDOG", "2.5"))
+TTS_WATCHDOG_LOUD_FRAMES = int(os.environ.get("GSM2COMPUTER_TTS_WATCHDOG_LOUD_FRAMES", "8"))
 
 LOG = logging.getLogger("gsm2computer-hub")
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -41,6 +52,7 @@ WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 current_mode: Optional[str] = None
 active_bridge: Optional["PipewireBridge"] = None
 active_openclaw: Optional["OpenClawTalkBridge"] = None
+call_busy = False
 
 try:
     from openclaw_talk_bridge import OpenClawTalkBridge
@@ -158,6 +170,32 @@ async def ws_read_frame(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
     return ""
 
 
+async def ws_send_close(writer: asyncio.StreamWriter, code: int, reason: str) -> None:
+    payload = code.to_bytes(2, "big") + reason.encode("utf-8")[:120]
+    writer.write(bytes([0x88, len(payload)]) + payload)
+    await writer.drain()
+
+
+async def fail_call_handshake(writer: asyncio.StreamWriter, message: str) -> None:
+    LOG.error("call handshake failed: %s", message)
+    try:
+        await ws_send_text(
+            writer,
+            json.dumps(
+                {
+                    "type": "error",
+                    "error": {
+                        "message": message,
+                        "code": "pipewire_handshake_failed",
+                    },
+                }
+            ),
+        )
+        await ws_send_close(writer, 1011, message)
+    except (ConnectionError, BrokenPipeError, OSError) as exc:
+        LOG.error("could not send handshake error to client: %s", exc)
+
+
 async def run_switchboard(*args: str) -> tuple[int, str, str]:
     if not SWITCHBOARD.is_file():
         return 1, "", f"missing switchboard script: {SWITCHBOARD}"
@@ -170,43 +208,6 @@ async def run_switchboard(*args: str) -> tuple[int, str, str]:
     )
     stdout_b, stderr_b = await proc.communicate()
     return proc.returncode or 0, stdout_b.decode("utf-8", errors="replace"), stderr_b.decode("utf-8", errors="replace")
-
-
-async def resolve_pipewire_record_target(name: str) -> str:
-    """pw-record --target wants a PipeWire object.serial.
-
-    Pulse names like openclaw_bus.monitor are not nodes, so --target falls
-    through to the default source (AWS-Virtual-Microphone on safwat-eu).
-    pactl source/sink indices match object.serial for these null sinks.
-    """
-    if name.isdigit():
-        return name
-
-    async def _pactl_short(kind: str) -> str:
-        proc = await asyncio.create_subprocess_exec(
-            "pactl",
-            "list",
-            kind,
-            "short",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout_b, stderr_b = await proc.communicate()
-        if proc.returncode:
-            err = stderr_b.decode("utf-8", errors="replace").strip()
-            raise RuntimeError(f"pactl list {kind} failed: {err or proc.returncode}")
-        return stdout_b.decode("utf-8", errors="replace")
-
-    for line in (await _pactl_short("sources")).splitlines():
-        parts = line.split()
-        if len(parts) >= 2 and parts[1] == name:
-            return parts[0]
-    sink = name[: -len(".monitor")] if name.endswith(".monitor") else name
-    for line in (await _pactl_short("sinks")).splitlines():
-        parts = line.split()
-        if len(parts) >= 2 and parts[1] == sink:
-            return parts[0]
-    raise RuntimeError(f"PipeWire record target not found: {name}")
 
 
 async def parse_switchboard_links() -> list[dict[str, str]]:
@@ -324,7 +325,38 @@ class PipewireBridge:
         self._playback: Optional[asyncio.subprocess.Process] = None
         self._record: Optional[asyncio.subprocess.Process] = None
         self._record_task: Optional[asyncio.Task] = None
+        self._helper_tasks: list[asyncio.Task] = []
         self._closed = False
+        self.downlink_energy_ticks = 0
+        self.playback_linked = False
+        self.record_linked = False
+
+    def _track_helper(self, proc: asyncio.subprocess.Process, label: str) -> None:
+        self._helper_tasks.append(asyncio.create_task(self._log_helper_stderr(proc, label)))
+        self._helper_tasks.append(asyncio.create_task(self._watch_helper_exit(proc, label)))
+
+    async def _log_helper_stderr(self, proc: asyncio.subprocess.Process, label: str) -> None:
+        if not proc.stderr:
+            return
+        try:
+            while True:
+                line = await proc.stderr.readline()
+                if not line:
+                    return
+                text = line.decode("utf-8", errors="replace").rstrip()
+                if text:
+                    LOG.warning("%s stderr: %s", label, text)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if not self._closed:
+                LOG.warning("%s stderr reader ended: %s", label, exc)
+
+    async def _watch_helper_exit(self, proc: asyncio.subprocess.Process, label: str) -> None:
+        rc = await proc.wait()
+        if self._closed:
+            return
+        LOG.error("%s exited early rc=%s", label, rc)
 
     async def start(
         self,
@@ -333,15 +365,15 @@ class PipewireBridge:
         record_downlink: bool = True,
     ) -> None:
         record_target = monitor or self.monitor
-        record_serial: Optional[str] = None
-        if record_downlink:
-            record_serial = await resolve_pipewire_record_target(record_target)
-            LOG.info("pw-record target %s -> serial %s", record_target, record_serial)
+        playback_serial = await resolve_pipewire_playback_target(self.sink)
+        LOG.info("pw-cat playback target %s -> serial %s", self.sink, playback_serial)
+        raw = await pw_cat_raw_args()
         self._playback = await asyncio.create_subprocess_exec(
             "pw-cat",
             "--playback",
+            *raw,
             "--target",
-            self.sink,
+            playback_serial,
             "--rate",
             str(self.rate),
             "--channels",
@@ -353,9 +385,22 @@ class PipewireBridge:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
-        if record_serial is not None:
+        self._track_helper(self._playback, "hub pw-cat")
+        detail = await wait_for_pipewire_link(
+            self._playback,
+            playback_serial,
+            direction="playback",
+            label="hub pw-cat",
+        )
+        self.playback_linked = True
+        LOG.info("hub playback linked: %s", detail)
+
+        if record_downlink:
+            record_serial = await resolve_pipewire_record_target(record_target)
+            LOG.info("pw-record target %s -> serial %s", record_target, record_serial)
             self._record = await asyncio.create_subprocess_exec(
                 "pw-record",
+                *raw,
                 "--media-category",
                 "Capture",
                 "--target",
@@ -371,18 +416,20 @@ class PipewireBridge:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            await asyncio.sleep(0.05)
-            if self._record.returncode is not None:
-                err = await self._record.stderr.read()
-                LOG.error(
-                    "pw-record 2ch s16 failed: %s",
-                    err.decode("utf-8", errors="replace").strip() or self._record.returncode,
-                )
-            else:
-                self._record_task = asyncio.create_task(self._pump_out(ws_writer))
+            self._track_helper(self._record, "hub pw-record")
+            rec_detail = await wait_for_pipewire_link(
+                self._record,
+                record_serial,
+                direction="record",
+                label="hub pw-record",
+            )
+            self.record_linked = True
+            LOG.info("hub record linked: %s", rec_detail)
+            self._record_task = asyncio.create_task(self._pump_out(ws_writer))
         LOG.info(
-            "pipewire bridge started sink=%s monitor=%s record=%s",
+            "pipewire bridge started sink=%s serial=%s monitor=%s record=%s",
             self.sink,
+            playback_serial,
             record_target if record_downlink else "off",
             record_downlink,
         )
@@ -412,6 +459,7 @@ class PipewireBridge:
             energy_r = audioop.rms(right, 2) / 32768.0
             if energy_l > 0.02 or energy_r > 0.02:
                 nonzero += 1
+                self.downlink_energy_ticks = nonzero
                 if nonzero == 1 or nonzero % 50 == 0:
                     LOG.info("downlink energy l=%.3f r=%.3f", energy_l, energy_r)
             event = {
@@ -425,10 +473,6 @@ class PipewireBridge:
                 break
         if self._record.returncode is None:
             await self._record.wait()
-        if self._record.stderr:
-            err = await self._record.stderr.read()
-            if err:
-                LOG.error("pw-record stderr: %s", err.decode("utf-8", errors="replace").strip())
 
     async def write_in(self, ulaw: bytes) -> None:
         if self._closed or not ulaw:
@@ -436,13 +480,21 @@ class PipewireBridge:
         proc = self._playback
         if not proc or not proc.stdin:
             return
-        proc.stdin.write(ulaw)
-        await proc.stdin.drain()
+        if proc.returncode is not None:
+            LOG.error("gsm playback write skipped: pw-cat already exited rc=%s", proc.returncode)
+            return
+        try:
+            proc.stdin.write(ulaw)
+            await proc.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+            LOG.error("gsm playback write failed: %s (pw-cat rc=%s)", exc, proc.returncode)
 
     async def stop(self) -> None:
         if self._closed:
             return
         self._closed = True
+        self.playback_linked = False
+        self.record_linked = False
         if self._record_task:
             self._record_task.cancel()
             try:
@@ -461,10 +513,50 @@ class PipewireBridge:
                 except asyncio.TimeoutError:
                     proc.kill()
                     await proc.wait()
-            if proc.stderr:
-                err = await proc.stderr.read()
-                if err:
-                    LOG.debug("pipewire stderr: %s", err.decode("utf-8", errors="replace").strip())
+        helper_tasks = self._helper_tasks
+        self._helper_tasks = []
+        for task in helper_tasks:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+
+async def _watch_talk_frames_without_energy(
+    openclaw: "OpenClawTalkBridge",
+    bridge: PipewireBridge,
+) -> None:
+    logged = False
+    logged_silence = False
+    while not bridge._closed:
+        await asyncio.sleep(0.5)
+        if bridge.downlink_energy_ticks > 0:
+            return
+        if (
+            openclaw.audio_frames >= 50
+            and openclaw.loud_audio_frames == 0
+            and not logged_silence
+        ):
+            logged_silence = True
+            LOG.error(
+                "talk PCM is digital silence frames=%s loud=0 — "
+                "gateway sent zeros (not a PipeWire miss)",
+                openclaw.audio_frames,
+            )
+        started = openclaw.first_loud_audio_frame_at
+        if started is None or openclaw.loud_audio_frames < TTS_WATCHDOG_LOUD_FRAMES:
+            continue
+        elapsed = time.monotonic() - started
+        if elapsed >= TTS_ENERGY_WATCHDOG_S and not logged:
+            logged = True
+            LOG.error(
+                "talk loud frames=%s (total=%s) received but monitor energy ~0 for %.1fs — "
+                "gateway PCM is not reaching the phone",
+                openclaw.loud_audio_frames,
+                openclaw.audio_frames,
+                elapsed,
+            )
 
 
 async def handle_websocket(
@@ -473,7 +565,7 @@ async def handle_websocket(
     headers: dict,
     path: str,
 ) -> None:
-    global active_bridge, active_openclaw
+    global active_bridge, active_openclaw, call_busy
 
     key = headers.get("sec-websocket-key")
     if not key:
@@ -481,7 +573,7 @@ async def handle_websocket(
         await writer.drain()
         return
 
-    if active_bridge is not None:
+    if call_busy or active_bridge is not None:
         writer.write(b"HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n")
         await writer.drain()
         return
@@ -506,25 +598,48 @@ async def handle_websocket(
         result = await set_switchboard_mode(AUTO_MODE_ON_CALL)
         LOG.info("auto mode on call: %s", result.get("applied") or result.get("error"))
 
+    call_busy = True
     bridge = PipewireBridge(GSM_SINK, GSM_MONITOR, AUDIO_RATE)
-    active_bridge = bridge
     openclaw_bridge: Optional[OpenClawTalkBridge] = None
+    watchdog_task: Optional[asyncio.Task] = None
     if loopback:
         downlink_monitor = GSM_MONITOR
     elif OPENCLAW_TALK_ON_CALL:
         downlink_monitor = OPENCLAW_DOWNLINK_MONITOR
     else:
         downlink_monitor = GSM_MONITOR
-    if not loopback and OPENCLAW_TALK_ON_CALL and OpenClawTalkBridge is not None:
-        try:
-            openclaw_bridge = OpenClawTalkBridge(mic_source="hub")
-            await openclaw_bridge.start()
-            active_openclaw = openclaw_bridge
-            LOG.info("openclaw talk bridge started for call")
-        except Exception as exc:
-            LOG.error("openclaw talk bridge failed to start: %s", exc)
     try:
-        await bridge.start(writer, monitor=downlink_monitor, record_downlink=not loopback)
+        if not loopback and OPENCLAW_TALK_ON_CALL:
+            if OpenClawTalkBridge is None:
+                await fail_call_handshake(writer, "OpenClaw talk bridge is not available")
+                return
+            try:
+                openclaw_bridge = OpenClawTalkBridge(mic_source="hub")
+                await openclaw_bridge.start_audio()
+                active_openclaw = openclaw_bridge
+                LOG.info("openclaw playback+talk handshake ready")
+            except Exception as exc:
+                if openclaw_bridge is not None:
+                    await openclaw_bridge.stop()
+                    openclaw_bridge = None
+                    active_openclaw = None
+                await fail_call_handshake(writer, f"openclaw pipewire handshake failed: {exc}")
+                return
+
+        try:
+            await bridge.start(writer, monitor=downlink_monitor, record_downlink=not loopback)
+        except (PipewireLinkError, RuntimeError) as exc:
+            await fail_call_handshake(writer, f"hub pipewire handshake failed: {exc}")
+            return
+
+        if openclaw_bridge is not None:
+            try:
+                await openclaw_bridge.start_talk()
+                LOG.info("openclaw talk+playback ready for session.updated")
+            except Exception as exc:
+                await fail_call_handshake(writer, f"openclaw talk session failed: {exc}")
+                return
+
         session_ack = {
             "type": "session.updated",
             "session": {
@@ -534,6 +649,12 @@ async def handle_websocket(
             },
         }
         await ws_send_text(writer, json.dumps(session_ack))
+        active_bridge = bridge
+
+        if openclaw_bridge is not None:
+            watchdog_task = asyncio.create_task(
+                _watch_talk_frames_without_energy(openclaw_bridge, bridge)
+            )
 
         while True:
             msg = await ws_read_frame(reader, writer)
@@ -566,8 +687,15 @@ async def handle_websocket(
             else:
                 LOG.debug("ws event type=%s", etype)
     finally:
+        if watchdog_task:
+            watchdog_task.cancel()
+            try:
+                await watchdog_task
+            except asyncio.CancelledError:
+                pass
         await bridge.stop()
         active_bridge = None
+        call_busy = False
         if openclaw_bridge is not None:
             await openclaw_bridge.stop()
             active_openclaw = None
@@ -675,7 +803,7 @@ _server: Optional[asyncio.AbstractServer] = None
 
 
 async def shutdown() -> None:
-    global active_bridge, active_openclaw
+    global active_bridge, active_openclaw, call_busy
     LOG.info("shutting down")
     if active_openclaw:
         await active_openclaw.stop()
@@ -683,6 +811,7 @@ async def shutdown() -> None:
     if active_bridge:
         await active_bridge.stop()
         active_bridge = None
+    call_busy = False
     raise SystemExit(0)
 
 

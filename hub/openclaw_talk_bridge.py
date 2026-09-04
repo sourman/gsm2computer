@@ -9,9 +9,18 @@ import base64
 import json
 import logging
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional
+
+from pipewire_target import (
+    PipewireLinkError,
+    pw_cat_raw_args,
+    resolve_pipewire_playback_target,
+    resolve_pipewire_record_target,
+    wait_for_pipewire_link,
+)
 
 LOG = logging.getLogger("openclaw-talk-bridge")
 
@@ -243,8 +252,34 @@ class OpenClawTalkBridge:
         self._mic_resample_state: Optional[tuple] = None
         self._closed = False
         self._audio_frames = 0
+        self._loud_audio_frames = 0
+        self._first_audio_frame_at: Optional[float] = None
+        self._first_loud_audio_frame_at: Optional[float] = None
+        self._playback_linked = False
+        self._record_linked = False
+        self._helper_tasks: list[asyncio.Task] = []
         self._reconnect_task: Optional[asyncio.Task] = None
         self._logged_event_types: set[str] = set()
+
+    @property
+    def audio_frames(self) -> int:
+        return self._audio_frames
+
+    @property
+    def first_audio_frame_at(self) -> Optional[float]:
+        return self._first_audio_frame_at
+
+    @property
+    def loud_audio_frames(self) -> int:
+        return self._loud_audio_frames
+
+    @property
+    def first_loud_audio_frame_at(self) -> Optional[float]:
+        return self._first_loud_audio_frame_at
+
+    @property
+    def playback_linked(self) -> bool:
+        return self._playback_linked
 
     def _session_create_params(
         self,
@@ -318,21 +353,50 @@ class OpenClawTalkBridge:
             return payload
         raise last_exc or RuntimeError("talk.session.create failed: no configured realtime provider")
 
-    async def start(self) -> None:
+    async def start_audio(self) -> None:
+        """Connect gateway, create Talk, then link PipeWire. Phone is not answered yet.
+
+        GPT-Live attaches a response owner at talk.session.create. The working
+        pre-SAF-28 path created Talk before pw-cat. We keep that order, but do
+        not return until playback is linked so the hub can still withhold
+        session.updated.
+        """
         if self._client:
             return
         self._closed = False
         self._client = OpenClawGatewayClient(self.gateway_url, self.gateway_token)
         await self._client.connect()
-        await self._create_talk_session()
-
+        # Queue + handler before create so greeting PCM is not dropped while
+        # we wait for the player link (old code registered the handler after).
+        self._playback_queue = asyncio.Queue()
         self._client.on_event("talk.event", self._on_talk_event)
         self._append_queue = asyncio.Queue(maxsize=APPEND_QUEUE_MAX)
         self._append_dropped = 0
         self._append_task = asyncio.create_task(self._append_worker())
+        await self._create_talk_session()
         await self._start_pipewire()
         if self.mic_source == "pipewire":
             self._record_task = asyncio.create_task(self._pump_mic_pipewire())
+
+    async def start_talk(self) -> None:
+        """Fail loud if Talk or the player is dead. Does not create a second session."""
+        if not self._client:
+            raise RuntimeError("start_audio() must run before start_talk()")
+        if not self._session_id:
+            raise RuntimeError("talk session was not created")
+        if not self._playback_linked:
+            raise PipewireLinkError("openclaw playback is not linked to the bus")
+        if self.mic_source == "pipewire" and not self._record_linked:
+            raise PipewireLinkError("openclaw record is not linked to the monitor")
+        proc = self._playback
+        if proc is None or proc.returncode is not None:
+            raise PipewireLinkError(
+                f"openclaw pw-cat dead rc={None if proc is None else proc.returncode}"
+            )
+
+    async def start(self) -> None:
+        await self.start_audio()
+        await self.start_talk()
 
     def feed_gsm_ulaw(self, ulaw: bytes) -> None:
         """Mix-minus uplink: phone audio from the GSM WebSocket, not the patched bus."""
@@ -440,6 +504,9 @@ class OpenClawTalkBridge:
                 try:
                     await self._create_talk_session()
                     self._audio_frames = 0
+                    self._loud_audio_frames = 0
+                    self._first_audio_frame_at = None
+                    self._first_loud_audio_frame_at = None
                     self._append_dropped = 0
                     LOG.info(
                         "talk session recreated attempt=%s sessionId=%s after %s",
@@ -457,13 +524,45 @@ class OpenClawTalkBridge:
         finally:
             self._reconnect_task = None
 
+    def _track_helper(self, proc: asyncio.subprocess.Process, label: str) -> None:
+        self._helper_tasks.append(asyncio.create_task(self._log_helper_stderr(proc, label)))
+        self._helper_tasks.append(asyncio.create_task(self._watch_helper_exit(proc, label)))
+
+    async def _log_helper_stderr(self, proc: asyncio.subprocess.Process, label: str) -> None:
+        if not proc.stderr:
+            return
+        try:
+            while True:
+                line = await proc.stderr.readline()
+                if not line:
+                    return
+                text = line.decode("utf-8", errors="replace").rstrip()
+                if text:
+                    LOG.warning("%s stderr: %s", label, text)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if not self._closed:
+                LOG.warning("%s stderr reader ended: %s", label, exc)
+
+    async def _watch_helper_exit(self, proc: asyncio.subprocess.Process, label: str) -> None:
+        rc = await proc.wait()
+        if self._closed:
+            return
+        LOG.error("%s exited early rc=%s", label, rc)
+
     async def _start_pipewire(self) -> None:
-        self._playback_queue = asyncio.Queue()
+        playback_serial = await resolve_pipewire_playback_target(self.bus)
+        LOG.info("pw-cat playback target %s -> serial %s", self.bus, playback_serial)
+        raw = await pw_cat_raw_args()
+        if self._playback_queue is None:
+            self._playback_queue = asyncio.Queue()
         self._playback = await asyncio.create_subprocess_exec(
             "pw-cat",
             "--playback",
+            *raw,
             "--target",
-            self.bus,
+            playback_serial,
             "--rate",
             str(self.sample_rate),
             "--channels",
@@ -473,14 +572,33 @@ class OpenClawTalkBridge:
             "-",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
+        self._track_helper(self._playback, "pw-cat playback")
+        try:
+            detail = await wait_for_pipewire_link(
+                self._playback,
+                playback_serial,
+                direction="playback",
+                label="openclaw pw-cat",
+            )
+        except PipewireLinkError:
+            self._playback_linked = False
+            raise
+        self._playback_linked = True
+        LOG.info("openclaw playback linked: %s", detail)
         self._playback_task = asyncio.create_task(self._drain_playback())
+
         if self.mic_source == "pipewire":
+            record_serial = await resolve_pipewire_record_target(self.monitor)
+            LOG.info("pw-record target %s -> serial %s", self.monitor, record_serial)
             self._record = await asyncio.create_subprocess_exec(
                 "pw-record",
+                *raw,
+                "--media-category",
+                "Capture",
                 "--target",
-                self.monitor,
+                record_serial,
                 "--rate",
                 str(self.sample_rate),
                 "--channels",
@@ -490,11 +608,26 @@ class OpenClawTalkBridge:
                 "-",
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
             )
+            self._track_helper(self._record, "pw-record")
+            try:
+                rec_detail = await wait_for_pipewire_link(
+                    self._record,
+                    record_serial,
+                    direction="record",
+                    label="openclaw pw-record",
+                )
+            except PipewireLinkError:
+                self._record_linked = False
+                raise
+            self._record_linked = True
+            LOG.info("openclaw record linked: %s", rec_detail)
+
         LOG.info(
-            "pipewire playback bus=%s mic_source=%s monitor=%s",
+            "pipewire playback bus=%s serial=%s mic_source=%s monitor=%s",
             self.bus,
+            playback_serial,
             self.mic_source,
             self.monitor if self.mic_source == "pipewire" else "hub-ulaw",
         )
@@ -505,46 +638,38 @@ class OpenClawTalkBridge:
             chunk = await self._playback_queue.get()
             if chunk is None:
                 break
+            proc = self._playback
+            if not proc or not proc.stdin:
+                LOG.error("playback write skipped: pw-cat stdin missing")
+                break
+            if proc.returncode is not None:
+                LOG.error("playback write skipped: pw-cat already exited rc=%s", proc.returncode)
+                break
             try:
-                self._playback.stdin.write(chunk)
-                await self._playback.stdin.drain()
-            except (BrokenPipeError, ConnectionResetError):
-                LOG.warning("playback pipe closed")
+                proc.stdin.write(chunk)
+                await proc.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+                LOG.error(
+                    "playback write failed: %s (pw-cat rc=%s)",
+                    exc,
+                    proc.returncode,
+                )
                 break
 
-    async def _restart_playback(self) -> None:
-        if self._playback_task:
-            self._playback_task.cancel()
+    def _flush_playback_queue(self) -> None:
+        """talk.event clear: drop queued PCM, keep the linked pw-cat for the call."""
+        q = self._playback_queue
+        if not q:
+            return
+        flushed = 0
+        while True:
             try:
-                await self._playback_task
-            except asyncio.CancelledError:
-                pass
-        if self._playback and self._playback.returncode is None:
-            self._playback.terminate()
-            try:
-                await asyncio.wait_for(self._playback.wait(), timeout=1)
-            except asyncio.TimeoutError:
-                self._playback.kill()
-                await self._playback.wait()
-        self._playback = None
-        self._playback_queue = asyncio.Queue()
-        self._playback = await asyncio.create_subprocess_exec(
-            "pw-cat",
-            "--playback",
-            "--target",
-            self.bus,
-            "--rate",
-            str(self.sample_rate),
-            "--channels",
-            "1",
-            "--format",
-            "s16",
-            "-",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        self._playback_task = asyncio.create_task(self._drain_playback())
+                item = q.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if item is not None:
+                flushed += 1
+        LOG.info("talk.event clear — flushed %s queued playback frames (pw-cat kept)", flushed)
 
     async def _pump_mic_pipewire(self) -> None:
         assert self._record and self._record.stdout
@@ -552,6 +677,11 @@ class OpenClawTalkBridge:
             try:
                 chunk = await self._record.stdout.readexactly(AUDIO_CHUNK_BYTES)
             except asyncio.IncompleteReadError:
+                if not self._closed:
+                    LOG.error(
+                        "pw-record stdout closed early rc=%s",
+                        None if not self._record else self._record.returncode,
+                    )
                 break
             except Exception as exc:
                 LOG.warning("mic read failed: %s", exc)
@@ -590,8 +720,7 @@ class OpenClawTalkBridge:
             self._note_session_dead(f"talk.event {outer or etype}: {reason}")
             return
         if outer in CLEAR_EVENT_TYPES or etype in CLEAR_EVENT_TYPES:
-            LOG.info("talk.event clear — restarting playback")
-            await self._restart_playback()
+            self._flush_playback_queue()
             return
         if not self._playback_queue:
             return
@@ -602,16 +731,47 @@ class OpenClawTalkBridge:
             pcm = base64.b64decode(audio_b64, validate=False)
         except Exception:
             return
-        if pcm:
-            self._audio_frames += 1
-            if self._audio_frames == 1 or self._audio_frames % 50 == 0:
-                LOG.info("talk.event audio frames=%s bytes=%s", self._audio_frames, len(pcm))
-            self._playback_queue.put_nowait(pcm)
+        if not pcm:
+            return
+        rms = audioop.rms(pcm, 2) / 32768.0
+        self._audio_frames += 1
+        if self._first_audio_frame_at is None:
+            self._first_audio_frame_at = time.monotonic()
+        if rms > 0.02:
+            self._loud_audio_frames += 1
+            if self._first_loud_audio_frame_at is None:
+                self._first_loud_audio_frame_at = time.monotonic()
+        if self._audio_frames == 1 or self._audio_frames % 50 == 0:
+            LOG.info(
+                "talk.event audio frames=%s bytes=%s rms=%.4f loud=%s (gateway PCM, not GSM downlink)",
+                self._audio_frames,
+                len(pcm),
+                rms,
+                self._loud_audio_frames,
+            )
+        proc = self._playback
+        if not proc or proc.returncode is not None:
+            LOG.error(
+                "talk.event audio dropped: pw-cat not running rc=%s frames=%s",
+                None if not proc else proc.returncode,
+                self._audio_frames,
+            )
+            return
+        qsize = self._playback_queue.qsize()
+        if qsize >= 200 and (qsize == 200 or qsize % 50 == 0):
+            LOG.warning(
+                "playback queue depth=%s; pw-cat may not be consuming (frames=%s)",
+                qsize,
+                self._audio_frames,
+            )
+        self._playback_queue.put_nowait(pcm)
 
     async def stop(self) -> None:
         if self._closed and not self._client:
             return
         self._closed = True
+        self._playback_linked = False
+        self._record_linked = False
         session_id = self._session_id
         client = self._client
         self._session_id = None
@@ -667,6 +827,14 @@ class OpenClawTalkBridge:
                     await proc.wait()
         self._playback = None
         self._record = None
+        helper_tasks = self._helper_tasks
+        self._helper_tasks = []
+        for task in helper_tasks:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
         if client and session_id:
             try:
