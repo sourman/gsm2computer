@@ -23,13 +23,39 @@ OPENCLAW_BUS = os.environ.get("GSM2COMPUTER_OPENCLAW_BUS", "openclaw_bus")
 OPENCLAW_MONITOR = os.environ.get("GSM2COMPUTER_OPENCLAW_MONITOR", "gsm_bus.monitor")
 OPENCLAW_SESSION_KEY = os.environ.get("GSM2COMPUTER_OPENCLAW_SESSION_KEY", "main")
 OPENCLAW_BRAIN = os.environ.get("GSM2COMPUTER_OPENCLAW_BRAIN", "agent-consult")
-OPENCLAW_TALK_MODEL = os.environ.get("GSM2COMPUTER_OPENCLAW_MODEL", "gpt-realtime-2.1-mini")
+OPENCLAW_TALK_PROVIDER = os.environ.get("GSM2COMPUTER_OPENCLAW_PROVIDER", "openai")
+# Gateway-relay GA realtime (gpt-realtime-2.1*) needs a Platform API key.
+# ChatGPT OAuth only unlocks GPT-Live over gateway-relay. Control UI Talk
+# still uses WebRTC + gpt-realtime-2.1-mini; do not change that config.
+OPENCLAW_TALK_MODEL = os.environ.get("GSM2COMPUTER_OPENCLAW_MODEL", "gpt-live-1-codex")
+OPENCLAW_TALK_VOICE = os.environ.get("GSM2COMPUTER_OPENCLAW_VOICE", "").strip()
 OPENCLAW_SAMPLE_RATE = int(os.environ.get("GSM2COMPUTER_OPENCLAW_SAMPLE_RATE", "24000"))
 GSM_SAMPLE_RATE = int(os.environ.get("GSM2COMPUTER_AUDIO_RATE", "8000"))
 # 20 ms PCM16 mono frames at 24 kHz.
 AUDIO_CHUNK_BYTES = int(os.environ.get("GSM2COMPUTER_OPENCLAW_CHUNK_BYTES", str(OPENCLAW_SAMPLE_RATE * 2 // 50)))
 # Match OpenClaw Control UI: at most 4 unanswered appendAudio RPCs, then drop.
 APPEND_QUEUE_MAX = int(os.environ.get("GSM2COMPUTER_OPENCLAW_APPEND_QUEUE", "4"))
+# Official Talk clients retry a dropped gateway-relay on ~0.5s then 2s.
+RECONNECT_DELAYS_S = (0.5, 2.0, 2.0, 2.0)
+SESSION_END_EVENT_TYPES = frozenset({"close", "error", "session.closed", "session.error"})
+CLEAR_EVENT_TYPES = frozenset({"clear"})
+# Prefer the requested model, then OAuth-capable GPT-Live, then GA realtime.
+FALLBACK_TALK_SESSIONS = (
+    {"provider": "openai", "model": "gpt-live-1-codex", "voice": "cove"},
+    {"provider": "openai", "model": "gpt-realtime-2.1-mini", "voice": "marin"},
+)
+
+
+def _default_voice(model: str) -> str:
+    if OPENCLAW_TALK_VOICE:
+        return OPENCLAW_TALK_VOICE
+    if str(model).startswith("gpt-live"):
+        return "cove"
+    return "marin"
+
+
+def _is_unconfigured_talk_error(reason: str) -> bool:
+    return "is not configured" in reason.lower()
 
 
 def load_gateway_token() -> str:
@@ -184,7 +210,9 @@ class OpenClawTalkBridge:
         monitor: str = OPENCLAW_MONITOR,
         session_key: str = OPENCLAW_SESSION_KEY,
         brain: str = OPENCLAW_BRAIN,
+        provider: str = OPENCLAW_TALK_PROVIDER,
         model: str = OPENCLAW_TALK_MODEL,
+        voice: Optional[str] = None,
         sample_rate: int = OPENCLAW_SAMPLE_RATE,
         mic_source: str = "pipewire",
         gsm_rate: int = GSM_SAMPLE_RATE,
@@ -195,7 +223,9 @@ class OpenClawTalkBridge:
         self.monitor = monitor
         self.session_key = session_key
         self.brain = brain
+        self.provider = provider
         self.model = model
+        self.voice = voice if voice is not None else _default_voice(model)
         self.sample_rate = sample_rate
         self.mic_source = mic_source
         self.gsm_rate = gsm_rate
@@ -213,6 +243,80 @@ class OpenClawTalkBridge:
         self._mic_resample_state: Optional[tuple] = None
         self._closed = False
         self._audio_frames = 0
+        self._reconnect_task: Optional[asyncio.Task] = None
+        self._logged_event_types: set[str] = set()
+
+    def _session_create_params(
+        self,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        voice: Optional[str] = None,
+    ) -> dict:
+        params = {
+            "mode": "realtime",
+            "transport": "gateway-relay",
+            "brain": self.brain,
+            "sessionKey": self.session_key,
+            "provider": provider or self.provider,
+            "model": model or self.model,
+        }
+        chosen_voice = voice if voice is not None else self.voice
+        if chosen_voice:
+            params["voice"] = chosen_voice
+        return params
+
+    def _talk_session_attempts(self) -> list[dict]:
+        attempts: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+
+        def add(provider: str, model: str, voice: str) -> None:
+            key = (provider, model)
+            if key in seen:
+                return
+            seen.add(key)
+            attempts.append({"provider": provider, "model": model, "voice": voice})
+
+        add(self.provider, self.model, self.voice or _default_voice(self.model))
+        for fallback in FALLBACK_TALK_SESSIONS:
+            add(fallback["provider"], fallback["model"], fallback["voice"])
+        return attempts
+
+    async def _create_talk_session(self) -> dict:
+        if not self._client:
+            raise RuntimeError("not connected")
+        attempts = self._talk_session_attempts()
+        last_exc: Optional[Exception] = None
+        for attempt in attempts:
+            params = self._session_create_params(**attempt)
+            try:
+                payload = await self._client.request("talk.session.create", params)
+            except Exception as exc:
+                last_exc = exc
+                if not _is_unconfigured_talk_error(str(exc)):
+                    raise
+                LOG.warning(
+                    "talk.session.create not configured provider=%s model=%s: %s",
+                    attempt["provider"],
+                    attempt["model"],
+                    exc,
+                )
+                continue
+            self.provider = attempt["provider"]
+            self.model = payload.get("model") or attempt["model"]
+            self.voice = payload.get("voice") or attempt["voice"]
+            self._session_id = payload.get("sessionId")
+            audio = payload.get("audio") or {}
+            LOG.info(
+                "talk session started sessionId=%s provider=%s model=%s voice=%s in=%sHz out=%sHz",
+                self._session_id,
+                payload.get("provider") or self.provider,
+                self.model,
+                self.voice,
+                audio.get("inputSampleRateHz"),
+                audio.get("outputSampleRateHz"),
+            )
+            return payload
+        raise last_exc or RuntimeError("talk.session.create failed: no configured realtime provider")
 
     async def start(self) -> None:
         if self._client:
@@ -220,25 +324,7 @@ class OpenClawTalkBridge:
         self._closed = False
         self._client = OpenClawGatewayClient(self.gateway_url, self.gateway_token)
         await self._client.connect()
-        payload = await self._client.request(
-            "talk.session.create",
-            {
-                "mode": "realtime",
-                "transport": "gateway-relay",
-                "brain": self.brain,
-                "sessionKey": self.session_key,
-                "model": self.model,
-            },
-        )
-        self._session_id = payload.get("sessionId")
-        audio = payload.get("audio") or {}
-        LOG.info(
-            "talk session started sessionId=%s model=%s in=%sHz out=%sHz",
-            self._session_id,
-            payload.get("model") or self.model,
-            audio.get("inputSampleRateHz"),
-            audio.get("outputSampleRateHz"),
-        )
+        await self._create_talk_session()
 
         self._client.on_event("talk.event", self._on_talk_event)
         self._append_queue = asyncio.Queue(maxsize=APPEND_QUEUE_MAX)
@@ -252,6 +338,10 @@ class OpenClawTalkBridge:
         """Mix-minus uplink: phone audio from the GSM WebSocket, not the patched bus."""
         if self._closed or self.mic_source != "hub" or not ulaw:
             return
+        if not self._session_id:
+            self._mic_buffer.clear()
+            self._mic_resample_state = None
+            return
         pcm8k = audioop.ulaw2lin(ulaw, 2)
         pcm24k, self._mic_resample_state = audioop.ratecv(
             pcm8k, 2, 1, self.gsm_rate, self.sample_rate, self._mic_resample_state
@@ -263,7 +353,7 @@ class OpenClawTalkBridge:
             self._enqueue_append(chunk)
 
     def _enqueue_append(self, chunk: bytes) -> None:
-        if self._closed:
+        if self._closed or not self._session_id:
             return
         q = self._append_queue
         if q.full():
@@ -298,7 +388,74 @@ class OpenClawTalkBridge:
                 },
             )
         except Exception as exc:
+            msg = str(exc)
+            if "Unknown Talk session" in msg or "realtime_unavailable" in msg:
+                self._note_session_dead(msg)
+                return
             LOG.warning("appendAudio failed: %s", exc)
+
+    def _drain_append_queue(self) -> None:
+        q = self._append_queue
+        while True:
+            try:
+                q.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+    def _is_fatal_talk_error(self, reason: str) -> bool:
+        text = reason.lower()
+        return any(
+            needle in text
+            for needle in (
+                "no credits remaining",
+                "insufficient_quota",
+                "billing",
+                "invalid_api_key",
+                "incorrect api key",
+                "is not configured",
+            )
+        )
+
+    def _note_session_dead(self, reason: str) -> None:
+        if self._closed:
+            return
+        self._session_id = None
+        self._drain_append_queue()
+        if self._is_fatal_talk_error(reason):
+            LOG.error("talk session dead; not recreating (%s)", reason)
+            return
+        if self._reconnect_task and not self._reconnect_task.done():
+            return
+        LOG.warning("talk session dead (%s); recreating", reason)
+        self._reconnect_task = asyncio.create_task(self._reconnect_session(reason))
+
+    async def _reconnect_session(self, reason: str) -> None:
+        try:
+            for attempt, delay in enumerate(RECONNECT_DELAYS_S, start=1):
+                if self._closed:
+                    return
+                await asyncio.sleep(delay)
+                if self._closed:
+                    return
+                try:
+                    await self._create_talk_session()
+                    self._audio_frames = 0
+                    self._append_dropped = 0
+                    LOG.info(
+                        "talk session recreated attempt=%s sessionId=%s after %s",
+                        attempt,
+                        self._session_id,
+                        reason,
+                    )
+                    return
+                except Exception as exc:
+                    LOG.warning("talk session recreate attempt=%s failed: %s", attempt, exc)
+                    if self._is_fatal_talk_error(str(exc)):
+                        LOG.error("talk session recreate aborted (%s)", exc)
+                        return
+            LOG.error("talk session recreate exhausted after %s", reason)
+        finally:
+            self._reconnect_task = None
 
     async def _start_pipewire(self) -> None:
         self._playback_queue = asyncio.Queue()
@@ -404,14 +561,39 @@ class OpenClawTalkBridge:
             await self._append_audio(chunk)
 
     async def _on_talk_event(self, payload: dict) -> None:
-        if self._closed or not self._playback_queue:
+        if self._closed:
             return
-        # Gateway wraps relay frames: { voiceSessionId, talkEvent: { type, audioBase64 } }
-        event = payload.get("talkEvent") if isinstance(payload.get("talkEvent"), dict) else payload
-        etype = event.get("type")
-        if etype == "clear":
+        # Gateway wraps relay frames: { type, reason, talkEvent: { type, audioBase64 } }
+        nested = payload.get("talkEvent") if isinstance(payload.get("talkEvent"), dict) else {}
+        event = nested if nested else payload
+        outer = str(payload.get("type") or "")
+        etype = str(event.get("type") or outer)
+        type_key = f"{outer}/{etype}"
+        if type_key not in self._logged_event_types and etype not in ("audio",):
+            self._logged_event_types.add(type_key)
+            LOG.info(
+                "talk.event type outer=%s nested=%s keys=%s",
+                outer,
+                etype,
+                sorted(payload)[:12],
+            )
+        if outer in SESSION_END_EVENT_TYPES or etype in SESSION_END_EVENT_TYPES:
+            reason = (
+                payload.get("reason")
+                or (event.get("payload") or {}).get("reason")
+                or event.get("message")
+                or payload.get("message")
+                or etype
+                or outer
+            )
+            LOG.warning("talk session ended outer=%s type=%s reason=%s", outer, etype, reason)
+            self._note_session_dead(f"talk.event {outer or etype}: {reason}")
+            return
+        if outer in CLEAR_EVENT_TYPES or etype in CLEAR_EVENT_TYPES:
             LOG.info("talk.event clear — restarting playback")
             await self._restart_playback()
+            return
+        if not self._playback_queue:
             return
         audio_b64 = event.get("audioBase64") or payload.get("audioBase64")
         if not audio_b64:
@@ -434,6 +616,14 @@ class OpenClawTalkBridge:
         client = self._client
         self._session_id = None
         self._client = None
+        reconnect = self._reconnect_task
+        self._reconnect_task = None
+        if reconnect:
+            reconnect.cancel()
+            try:
+                await reconnect
+            except asyncio.CancelledError:
+                pass
 
         if self._record_task:
             self._record_task.cancel()
