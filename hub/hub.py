@@ -15,7 +15,7 @@ import socket
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 from pipewire_target import (
     PipewireLinkError,
@@ -34,17 +34,26 @@ HUB_DIR = Path(os.environ.get("GSM2COMPUTER_HUB_DIR", Path(__file__).resolve().p
 SWITCHBOARD = HUB_DIR / "switchboard.sh"
 GSM_SINK = os.environ.get("GSM2COMPUTER_GSM_SINK", "gsm_bus")
 GSM_MONITOR = os.environ.get("GSM2COMPUTER_GSM_MONITOR", "gsm_bus.monitor")
+PHONE_UPLINK_SINK = os.environ.get("GSM2COMPUTER_PHONE_UPLINK_SINK", "phone_uplink")
 OPENCLAW_DOWNLINK_MONITOR = os.environ.get(
     "GSM2COMPUTER_OPENCLAW_DOWNLINK_MONITOR", "openclaw_bus.monitor"
 )
 AUDIO_RATE = int(os.environ.get("GSM2COMPUTER_AUDIO_RATE", "8000"))
 AUTO_MODE_ON_CALL = os.environ.get("GSM2COMPUTER_AUTO_MODE", "openclaw")
-OPENCLAW_TALK_ON_CALL = os.environ.get("GSM2COMPUTER_OPENCLAW_TALK", "1").lower() not in (
-    "0",
-    "false",
-    "no",
-    "off",
-)
+
+
+def _parse_openclaw_talk_mode(raw: Optional[str]) -> str:
+    """webrtc-ui is default. relay is an explicit legacy escape. Never auto-fallback."""
+    value = (raw if raw is not None else "webrtc-ui").strip().lower()
+    if value in ("0", "false", "no", "off"):
+        return "off"
+    if value in ("relay", "gateway-relay", "session"):
+        return "relay"
+    return "webrtc-ui"
+
+
+OPENCLAW_TALK_MODE = _parse_openclaw_talk_mode(os.environ.get("GSM2COMPUTER_OPENCLAW_TALK", "webrtc-ui"))
+OPENCLAW_TALK_ON_CALL = OPENCLAW_TALK_MODE != "off"
 RECORD_CHUNK = int(os.environ.get("GSM2COMPUTER_RECORD_CHUNK", "160"))
 ULAW_BIAS = 0x84
 TTS_ENERGY_WATCHDOG_S = float(os.environ.get("GSM2COMPUTER_TTS_ENERGY_WATCHDOG", "2.5"))
@@ -55,13 +64,20 @@ WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 current_mode: Optional[str] = None
 active_bridge: Optional["PipewireBridge"] = None
-active_openclaw: Optional["OpenClawTalkBridge"] = None
+active_openclaw: Optional[Any] = None
 call_busy = False
 
 try:
     from openclaw_talk_bridge import OpenClawTalkBridge
 except ImportError:
     OpenClawTalkBridge = None  # type: ignore[misc, assignment]
+
+try:
+    from talk_chromium import OpenClawTalkUI, TalkUiError, get_talk_ui
+except ImportError:
+    OpenClawTalkUI = None  # type: ignore[misc, assignment]
+    TalkUiError = RuntimeError  # type: ignore[misc, assignment]
+    get_talk_ui = None  # type: ignore[misc, assignment]
 
 
 def json_response(status: int, body: dict, extra_headers: Optional[dict] = None) -> bytes:
@@ -223,7 +239,7 @@ async def parse_switchboard_links() -> list[dict[str, str]]:
     )
     stdout_b, _ = await proc.communicate()
     links: list[dict[str, str]] = []
-    bus_re = re.compile(r"(gsm_bus|openclaw_bus|whatsapp_bus|telegram_bus)")
+    bus_re = re.compile(r"(gsm_bus|openclaw_bus|phone_uplink|whatsapp_bus|telegram_bus)")
     current_src: Optional[str] = None
     for raw in stdout_b.decode("utf-8", errors="replace").splitlines():
         line = raw.strip()
@@ -531,7 +547,7 @@ class PipewireBridge:
 
 
 async def _watch_talk_frames_without_energy(
-    openclaw: "OpenClawTalkBridge",
+    openclaw: Any,
     bridge: PipewireBridge,
 ) -> None:
     logged = False
@@ -606,17 +622,35 @@ async def handle_websocket(
         LOG.info("auto mode on call: %s", result.get("applied") or result.get("error"))
 
     call_busy = True
-    bridge = PipewireBridge(GSM_SINK, GSM_MONITOR, AUDIO_RATE)
-    openclaw_bridge: Optional[OpenClawTalkBridge] = None
+    playback_sink = GSM_SINK
+    openclaw_bridge: Optional[Any] = None
     watchdog_task: Optional[asyncio.Task] = None
     if loopback:
         downlink_monitor = GSM_MONITOR
+    elif OPENCLAW_TALK_MODE == "webrtc-ui":
+        playback_sink = PHONE_UPLINK_SINK
+        downlink_monitor = OPENCLAW_DOWNLINK_MONITOR
     elif OPENCLAW_TALK_ON_CALL:
         downlink_monitor = OPENCLAW_DOWNLINK_MONITOR
     else:
         downlink_monitor = GSM_MONITOR
+    bridge = PipewireBridge(playback_sink, GSM_MONITOR, AUDIO_RATE)
     try:
-        if not loopback and OPENCLAW_TALK_ON_CALL:
+        if not loopback and OPENCLAW_TALK_MODE == "webrtc-ui":
+            if OpenClawTalkUI is None or get_talk_ui is None:
+                await fail_call_handshake(writer, "OpenClaw Control UI Talk supervisor is not available")
+                return
+            try:
+                openclaw_bridge = get_talk_ui()
+                await openclaw_bridge.start_audio()
+                active_openclaw = openclaw_bridge
+                LOG.info("openclaw webrtc-ui chromium handshake ready")
+            except Exception as exc:
+                openclaw_bridge = None
+                active_openclaw = None
+                await fail_call_handshake(writer, f"openclaw webrtc-ui handshake failed: {exc}")
+                return
+        elif not loopback and OPENCLAW_TALK_MODE == "relay":
             if OpenClawTalkBridge is None:
                 await fail_call_handshake(writer, "OpenClaw talk bridge is not available")
                 return
@@ -642,7 +676,7 @@ async def handle_websocket(
         if openclaw_bridge is not None:
             try:
                 await openclaw_bridge.start_talk()
-                LOG.info("openclaw talk+playback ready for session.updated")
+                LOG.info("openclaw talk ready for session.updated (mode=%s)", OPENCLAW_TALK_MODE)
             except Exception as exc:
                 await fail_call_handshake(writer, f"openclaw talk session failed: {exc}")
                 return
@@ -651,14 +685,15 @@ async def handle_websocket(
             "type": "session.updated",
             "session": {
                 "id": f"hub-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
-                "model": "gsm2computer-hub",
+                "model": f"gsm2computer-hub-{OPENCLAW_TALK_MODE}" if not loopback else "gsm2computer-hub",
                 "audio": {"format": "audio/pcmu", "rate": AUDIO_RATE},
+                "talk": OPENCLAW_TALK_MODE if not loopback else "off",
             },
         }
         await ws_send_text(writer, json.dumps(session_ack))
         active_bridge = bridge
 
-        if openclaw_bridge is not None:
+        if openclaw_bridge is not None and OPENCLAW_TALK_MODE == "relay":
             watchdog_task = asyncio.create_task(
                 _watch_talk_frames_without_energy(openclaw_bridge, bridge)
             )
@@ -689,7 +724,7 @@ async def handle_websocket(
                             "channels": {"l": energy, "r": energy},
                         }
                         await ws_send_text(writer, json.dumps(echo))
-                    elif openclaw_bridge is not None:
+                    elif OPENCLAW_TALK_MODE == "relay" and openclaw_bridge is not None:
                         openclaw_bridge.feed_gsm_ulaw(ulaw)
             else:
                 LOG.debug("ws event type=%s", etype)
@@ -706,7 +741,7 @@ async def handle_websocket(
         if openclaw_bridge is not None:
             await openclaw_bridge.stop()
             active_openclaw = None
-            LOG.info("openclaw talk bridge stopped")
+            LOG.info("openclaw talk stopped (mode=%s)", OPENCLAW_TALK_MODE)
         LOG.info("WebSocket disconnected")
 
 
@@ -733,7 +768,17 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
     try:
         if method == "GET" and path == "/health":
-            writer.write(json_response(200, {"ok": True, "mode": current_mode}))
+            body: dict[str, Any] = {
+                "ok": True,
+                "mode": current_mode,
+                "openclaw_talk": OPENCLAW_TALK_MODE,
+            }
+            if OPENCLAW_TALK_MODE == "webrtc-ui" and get_talk_ui is not None:
+                try:
+                    body["talk"] = await get_talk_ui().health()
+                except Exception as exc:
+                    body["talk"] = {"error": str(exc)}
+            writer.write(json_response(200, body))
         elif method == "POST" and path == "/token":
             expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
             writer.write(
@@ -803,7 +848,7 @@ async def main() -> None:
         addrs,
         GSM_SINK,
         AUTO_MODE_ON_CALL or "off",
-        "on" if OPENCLAW_TALK_ON_CALL else "off",
+        OPENCLAW_TALK_MODE,
     )
     async with server:
         await server.serve_forever()

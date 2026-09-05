@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""OpenClaw gateway-relay talk session ↔ PipeWire openclaw_bus bridge."""
+"""OpenClaw gateway-relay talk session ↔ PipeWire openclaw_bus bridge.
+
+Legacy path. Default hub Talk is Control UI WebRTC (`talk_chromium.py`,
+GSM2COMPUTER_OPENCLAW_TALK=webrtc-ui). Set that env to `relay` to use this
+module. The hub must not fall back here automatically.
+"""
 from __future__ import annotations
 
 import argparse

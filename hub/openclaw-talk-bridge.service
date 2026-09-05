@@ -1,5 +1,5 @@
 [Unit]
-Description=gsm2computer OpenClaw talk bridge (openclaw_bus ↔ gateway-relay)
+Description=gsm2computer OpenClaw talk bridge (LEGACY gateway-relay; default is Control UI WebRTC)
 After=network-online.target pipewire.service gsm2computer-audio-bus.service
 Wants=gsm2computer-audio-bus.service
 

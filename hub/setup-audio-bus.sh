@@ -18,5 +18,6 @@ create_sink() {
 
 create_sink gsm_bus GSM_Bus
 create_sink openclaw_bus OpenClaw_Bus
+create_sink phone_uplink Phone_Uplink
 create_sink whatsapp_bus WhatsApp_Bus
 create_sink telegram_bus Telegram_Bus

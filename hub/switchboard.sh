@@ -16,7 +16,7 @@ unlink_all() {
       src="${line#"${line%%[![:space:]]*}"}"
       src="${src%"${src##*[![:space:]]}"}"
     fi
-  done < <(pw-link -l 2>/dev/null | grep -E "gsm_bus|openclaw_bus|whatsapp_bus|telegram_bus|\\|->" || true)
+  done < <(pw-link -l 2>/dev/null | grep -E "gsm_bus|openclaw_bus|phone_uplink|whatsapp_bus|telegram_bus|\\|->" || true)
 }
 
 link_stereo() {
@@ -28,9 +28,9 @@ link_stereo() {
 case "${1:-status}" in
   status)
     echo "=== sinks ==="
-    pactl list sinks short | grep -E "gsm|openclaw|whatsapp|telegram" || true
+    pactl list sinks short | grep -E "gsm|openclaw|phone_uplink|whatsapp|telegram" || true
     echo "=== links ==="
-    pw-link -l 2>/dev/null | grep -E "gsm_bus|openclaw_bus|whatsapp_bus|telegram_bus" || true
+    pw-link -l 2>/dev/null | grep -E "gsm_bus|openclaw_bus|phone_uplink|whatsapp_bus|telegram_bus" || true
     ;;
   clear) unlink_all ;;
   openclaw)
