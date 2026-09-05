@@ -5,6 +5,8 @@ export class UlawPlayer {
   private ctx: AudioContext;
   private gain: GainNode;
   private nextTime = 0;
+  /** Hold ~100 ms so Tailscale / PipeWire jitter does not snap to now. */
+  private readonly prebuffer = 0.1;
 
   constructor() {
     this.ctx = new AudioContext();
@@ -31,7 +33,9 @@ export class UlawPlayer {
     src.connect(this.gain);
 
     const now = this.ctx.currentTime;
-    if (this.nextTime < now) this.nextTime = now;
+    if (this.nextTime < now + 0.005) {
+      this.nextTime = now + this.prebuffer;
+    }
     src.start(this.nextTime);
     this.nextTime += buffer.duration;
   }

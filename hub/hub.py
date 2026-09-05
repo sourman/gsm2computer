@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import signal
+import socket
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -18,7 +19,10 @@ from typing import Optional, Tuple
 
 from pipewire_target import (
     PipewireLinkError,
+    pipewire_stream_env,
     pw_cat_raw_args,
+    pw_latency_args,
+    stdbuf_unbuffered,
     resolve_pipewire_playback_target,
     resolve_pipewire_record_target,
     wait_for_pipewire_link,
@@ -368,10 +372,14 @@ class PipewireBridge:
         playback_serial = await resolve_pipewire_playback_target(self.sink)
         LOG.info("pw-cat playback target %s -> serial %s", self.sink, playback_serial)
         raw = await pw_cat_raw_args()
+        latency = pw_latency_args()
+        pw_env = pipewire_stream_env(self.rate)
         self._playback = await asyncio.create_subprocess_exec(
+            *stdbuf_unbuffered(),
             "pw-cat",
             "--playback",
             *raw,
+            *latency,
             "--target",
             playback_serial,
             "--rate",
@@ -384,6 +392,7 @@ class PipewireBridge:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
+            env=pw_env,
         )
         self._track_helper(self._playback, "hub pw-cat")
         detail = await wait_for_pipewire_link(
@@ -399,8 +408,10 @@ class PipewireBridge:
             record_serial = await resolve_pipewire_record_target(record_target)
             LOG.info("pw-record target %s -> serial %s", record_target, record_serial)
             self._record = await asyncio.create_subprocess_exec(
+                *stdbuf_unbuffered(),
                 "pw-record",
                 *raw,
+                *latency,
                 "--media-category",
                 "Capture",
                 "--target",
@@ -415,6 +426,7 @@ class PipewireBridge:
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=pw_env,
             )
             self._track_helper(self._record, "hub pw-record")
             rec_detail = await wait_for_pipewire_link(
@@ -441,17 +453,12 @@ class PipewireBridge:
         nonzero = 0
         while not self._closed:
             try:
-                chunk = await self._record.stdout.read(read_size)
+                chunk = await self._record.stdout.readexactly(read_size)
+            except asyncio.IncompleteReadError:
+                break
             except Exception as exc:
                 LOG.warning("record read failed: %s", exc)
                 break
-            if not chunk:
-                break
-            extra = len(chunk) % 4
-            if extra:
-                chunk = chunk[: len(chunk) - extra]
-            if not chunk:
-                continue
             left = audioop.tomono(chunk, 2, 1, 0)
             right = audioop.tomono(chunk, 2, 0, 1)
             mono_pcm = audioop.tomono(chunk, 2, 0.5, 0.5)
@@ -704,6 +711,9 @@ async def handle_websocket(
 
 
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    sock = writer.get_extra_info("socket")
+    if sock is not None:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     peer = writer.get_extra_info("peername")
     try:
         method, path, headers, body = await read_http_request(reader)

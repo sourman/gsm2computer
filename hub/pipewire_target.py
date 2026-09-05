@@ -119,6 +119,31 @@ async def resolve_pipewire_record_target(name: str) -> str:
     return serial
 
 
+def stdbuf_unbuffered() -> list[str]:
+    """pw-record FILE* stdout is fully buffered (4 KiB) on a pipe.
+
+    4096 / (8000 Hz * 4 bytes stereo) = 128 ms, which is the clippy stall.
+    """
+    return ["stdbuf", "-o0", "-i0"]
+
+
+def pw_latency_args() -> list[str]:
+    """Keep pw-cat/pw-record quantum at one 20 ms GSM frame.
+
+    The default 100 ms latency makes pw-record stdout arrive as mixed 8 ms
+    fragments and ~120 ms stalls, which the simulator then plays as dropouts.
+    """
+    return ["--latency", os.environ.get("GSM2COMPUTER_PW_LATENCY", "20ms")]
+
+
+def pipewire_stream_env(rate: int) -> dict[str, str]:
+    """Force 20 ms quanta in the helper process (PIPEWIRE_LATENCY=period/rate)."""
+    env = os.environ.copy()
+    period = max(1, int(rate) // 50)
+    env["PIPEWIRE_LATENCY"] = f"{period}/{int(rate)}"
+    return env
+
+
 async def pw_cat_raw_args() -> list[str]:
     """Return ['--raw'] only if this pw-cat documents the flag.
 

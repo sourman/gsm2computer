@@ -24,6 +24,7 @@ const sidetoneMeter = new StereoMeter(document.getElementById("meter-sidetone")!
 let client: HubClient | null = null;
 let mic: Awaited<ReturnType<typeof startMicCapture>> | null = null;
 let player: UlawPlayer | null = null;
+let sidetonePlayer: UlawPlayer | null = null;
 let tonePhase = 0;
 let bytesSent = 0;
 let bytesRecv = 0;
@@ -78,6 +79,10 @@ async function startCall(): Promise<void> {
 
   player = new UlawPlayer();
   await player.resume();
+  if (useTone && !loopback) {
+    sidetonePlayer = new UlawPlayer();
+    await sidetonePlayer.resume();
+  }
 
   client = new HubClient(
     hubUrl,
@@ -133,7 +138,7 @@ async function startCall(): Promise<void> {
         toneMeter.setEnergy(energy);
         if (!loopback) {
           sidetoneMeter.setEnergy(energy);
-          player?.playMulaw(frame);
+          sidetonePlayer?.playMulaw(frame);
         }
         return frame;
       });
@@ -173,6 +178,8 @@ async function endCall(): Promise<void> {
 
   player?.stop();
   player = null;
+  sidetonePlayer?.stop();
+  sidetonePlayer = null;
 
   setUiInCall(false);
   statusEl.textContent = "idle";

@@ -16,7 +16,10 @@ from typing import Any, Optional
 
 from pipewire_target import (
     PipewireLinkError,
+    pipewire_stream_env,
     pw_cat_raw_args,
+    pw_latency_args,
+    stdbuf_unbuffered,
     resolve_pipewire_playback_target,
     resolve_pipewire_record_target,
     wait_for_pipewire_link,
@@ -33,10 +36,9 @@ OPENCLAW_MONITOR = os.environ.get("GSM2COMPUTER_OPENCLAW_MONITOR", "gsm_bus.moni
 OPENCLAW_SESSION_KEY = os.environ.get("GSM2COMPUTER_OPENCLAW_SESSION_KEY", "main")
 OPENCLAW_BRAIN = os.environ.get("GSM2COMPUTER_OPENCLAW_BRAIN", "agent-consult")
 OPENCLAW_TALK_PROVIDER = os.environ.get("GSM2COMPUTER_OPENCLAW_PROVIDER", "openai")
-# Gateway-relay GA realtime (gpt-realtime-2.1*) needs a Platform API key.
-# ChatGPT OAuth only unlocks GPT-Live over gateway-relay. Control UI Talk
-# still uses WebRTC + gpt-realtime-2.1-mini; do not change that config.
-OPENCLAW_TALK_MODEL = os.environ.get("GSM2COMPUTER_OPENCLAW_MODEL", "gpt-live-1-codex")
+# Call path (simulator/GSM) uses the same GA realtime model as Control UI Talk.
+# Needs a Platform API key on the gateway; GPT-Live is OAuth-only fallback.
+OPENCLAW_TALK_MODEL = os.environ.get("GSM2COMPUTER_OPENCLAW_MODEL", "gpt-realtime-2.1-mini")
 OPENCLAW_TALK_VOICE = os.environ.get("GSM2COMPUTER_OPENCLAW_VOICE", "").strip()
 OPENCLAW_SAMPLE_RATE = int(os.environ.get("GSM2COMPUTER_OPENCLAW_SAMPLE_RATE", "24000"))
 GSM_SAMPLE_RATE = int(os.environ.get("GSM2COMPUTER_AUDIO_RATE", "8000"))
@@ -48,10 +50,10 @@ APPEND_QUEUE_MAX = int(os.environ.get("GSM2COMPUTER_OPENCLAW_APPEND_QUEUE", "4")
 RECONNECT_DELAYS_S = (0.5, 2.0, 2.0, 2.0)
 SESSION_END_EVENT_TYPES = frozenset({"close", "error", "session.closed", "session.error"})
 CLEAR_EVENT_TYPES = frozenset({"clear"})
-# Prefer the requested model, then OAuth-capable GPT-Live, then GA realtime.
+# Prefer the requested model, then GA realtime, then OAuth GPT-Live.
 FALLBACK_TALK_SESSIONS = (
-    {"provider": "openai", "model": "gpt-live-1-codex", "voice": "cove"},
     {"provider": "openai", "model": "gpt-realtime-2.1-mini", "voice": "marin"},
+    {"provider": "openai", "model": "gpt-live-1-codex", "voice": "cove"},
 )
 
 
@@ -474,6 +476,8 @@ class OpenClawTalkBridge:
                 "no credits remaining",
                 "insufficient_quota",
                 "billing",
+                "usage_limit_reached",
+                "usage limit has been reached",
                 "invalid_api_key",
                 "incorrect api key",
                 "is not configured",
@@ -555,12 +559,16 @@ class OpenClawTalkBridge:
         playback_serial = await resolve_pipewire_playback_target(self.bus)
         LOG.info("pw-cat playback target %s -> serial %s", self.bus, playback_serial)
         raw = await pw_cat_raw_args()
+        latency = pw_latency_args()
+        pw_env = pipewire_stream_env(self.sample_rate)
         if self._playback_queue is None:
             self._playback_queue = asyncio.Queue()
         self._playback = await asyncio.create_subprocess_exec(
+            *stdbuf_unbuffered(),
             "pw-cat",
             "--playback",
             *raw,
+            *latency,
             "--target",
             playback_serial,
             "--rate",
@@ -573,6 +581,7 @@ class OpenClawTalkBridge:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
+            env=pw_env,
         )
         self._track_helper(self._playback, "pw-cat playback")
         try:
@@ -593,8 +602,10 @@ class OpenClawTalkBridge:
             record_serial = await resolve_pipewire_record_target(self.monitor)
             LOG.info("pw-record target %s -> serial %s", self.monitor, record_serial)
             self._record = await asyncio.create_subprocess_exec(
+                *stdbuf_unbuffered(),
                 "pw-record",
                 *raw,
+                *latency,
                 "--media-category",
                 "Capture",
                 "--target",
@@ -609,6 +620,7 @@ class OpenClawTalkBridge:
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=pw_env,
             )
             self._track_helper(self._record, "pw-record")
             try:
