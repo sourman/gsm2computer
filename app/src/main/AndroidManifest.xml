@@ -54,6 +54,9 @@
     <!-- SMS ingest (forwarded to hub; phone does not parse commands) -->
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
 
+    <!-- RECEIVE_SMS implies telephony; declare optional for ChromeOS lint. -->
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
+
     <application
         android:name=".GatewayApp"
         android:allowBackup="false"
