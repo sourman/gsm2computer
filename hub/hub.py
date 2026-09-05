@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
+from call_tap import CallTap
 from pipewire_target import (
     PipewireLinkError,
     pipewire_stream_env,
@@ -66,6 +67,7 @@ current_mode: Optional[str] = None
 active_bridge: Optional["PipewireBridge"] = None
 active_openclaw: Optional[Any] = None
 call_busy = False
+last_call_tap: Optional[dict[str, Any]] = None
 
 try:
     from openclaw_talk_bridge import OpenClawTalkBridge
@@ -338,10 +340,11 @@ def parse_sms_command(body: str) -> Optional[str]:
 
 
 class PipewireBridge:
-    def __init__(self, sink: str, monitor: str, rate: int) -> None:
+    def __init__(self, sink: str, monitor: str, rate: int, tap: Optional[CallTap] = None) -> None:
         self.sink = sink
         self.monitor = monitor
         self.rate = rate
+        self.tap = tap
         self._playback: Optional[asyncio.subprocess.Process] = None
         self._record: Optional[asyncio.subprocess.Process] = None
         self._record_task: Optional[asyncio.Task] = None
@@ -478,6 +481,8 @@ class PipewireBridge:
             left = audioop.tomono(chunk, 2, 1, 0)
             right = audioop.tomono(chunk, 2, 0, 1)
             mono_pcm = audioop.tomono(chunk, 2, 0.5, 0.5)
+            if self.tap:
+                self.tap.write_s16("gsm-downlink-8k-mono", mono_pcm, self.rate, 1)
             energy_l = audioop.rms(left, 2) / 32768.0
             energy_r = audioop.rms(right, 2) / 32768.0
             if energy_l > 0.02 or energy_r > 0.02:
@@ -500,6 +505,8 @@ class PipewireBridge:
     async def write_in(self, ulaw: bytes) -> None:
         if self._closed or not ulaw:
             return
+        if self.tap:
+            self.tap.write_ulaw("gsm-uplink-8k-mono", ulaw, self.rate)
         proc = self._playback
         if not proc or not proc.stdin:
             return
@@ -588,8 +595,9 @@ async def handle_websocket(
     headers: dict,
     path: str,
 ) -> None:
-    global active_bridge, active_openclaw, call_busy
+    global active_bridge, active_openclaw, call_busy, last_call_tap
 
+    tap: Optional[CallTap] = None
     key = headers.get("sec-websocket-key")
     if not key:
         writer.write(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
@@ -597,45 +605,48 @@ async def handle_websocket(
         return
 
     if call_busy or active_bridge is not None:
+        LOG.warning("rejecting websocket: call already in progress")
         writer.write(b"HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n")
         await writer.drain()
         return
-
-    accept = ws_accept_key(key)
-    response = (
-        "HTTP/1.1 101 Switching Protocols\r\n"
-        "Upgrade: websocket\r\n"
-        "Connection: Upgrade\r\n"
-        f"Sec-WebSocket-Accept: {accept}\r\n"
-        "\r\n"
-    )
-    writer.write(response.encode("ascii"))
-    await writer.drain()
-
-    loopback = path.strip("/") == "loopback" or path.startswith("/loopback")
-    LOG.info("WebSocket connected path=%s loopback=%s", path, loopback)
-    if loopback:
-        result = await set_switchboard_mode("loopback")
-        LOG.info("loopback call: %s", result.get("applied") or result.get("error"))
-    elif AUTO_MODE_ON_CALL:
-        result = await set_switchboard_mode(AUTO_MODE_ON_CALL)
-        LOG.info("auto mode on call: %s", result.get("applied") or result.get("error"))
 
     call_busy = True
     playback_sink = GSM_SINK
     openclaw_bridge: Optional[Any] = None
     watchdog_task: Optional[asyncio.Task] = None
-    if loopback:
-        downlink_monitor = GSM_MONITOR
-    elif OPENCLAW_TALK_MODE == "webrtc-ui":
-        playback_sink = PHONE_UPLINK_SINK
-        downlink_monitor = OPENCLAW_DOWNLINK_MONITOR
-    elif OPENCLAW_TALK_ON_CALL:
-        downlink_monitor = OPENCLAW_DOWNLINK_MONITOR
-    else:
-        downlink_monitor = GSM_MONITOR
-    bridge = PipewireBridge(playback_sink, GSM_MONITOR, AUDIO_RATE)
+    bridge: Optional[PipewireBridge] = None
     try:
+        accept = ws_accept_key(key)
+        response = (
+            "HTTP/1.1 101 Switching Protocols\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Accept: {accept}\r\n"
+            "\r\n"
+        )
+        writer.write(response.encode("ascii"))
+        await writer.drain()
+
+        loopback = path.strip("/") == "loopback" or path.startswith("/loopback")
+        LOG.info("WebSocket connected path=%s loopback=%s", path, loopback)
+        tap = CallTap.maybe_open(loopback=loopback, mode="off" if loopback else OPENCLAW_TALK_MODE)
+        if loopback:
+            result = await set_switchboard_mode("loopback")
+            LOG.info("loopback call: %s", result.get("applied") or result.get("error"))
+        elif AUTO_MODE_ON_CALL:
+            result = await set_switchboard_mode(AUTO_MODE_ON_CALL)
+            LOG.info("auto mode on call: %s", result.get("applied") or result.get("error"))
+
+        if loopback:
+            downlink_monitor = GSM_MONITOR
+        elif OPENCLAW_TALK_MODE == "webrtc-ui":
+            playback_sink = PHONE_UPLINK_SINK
+            downlink_monitor = OPENCLAW_DOWNLINK_MONITOR
+        elif OPENCLAW_TALK_ON_CALL:
+            downlink_monitor = OPENCLAW_DOWNLINK_MONITOR
+        else:
+            downlink_monitor = GSM_MONITOR
+        bridge = PipewireBridge(playback_sink, GSM_MONITOR, AUDIO_RATE, tap=tap)
         if not loopback and OPENCLAW_TALK_MODE == "webrtc-ui":
             if OpenClawTalkUI is None or get_talk_ui is None:
                 await fail_call_handshake(writer, "OpenClaw Control UI Talk supervisor is not available")
@@ -655,7 +666,7 @@ async def handle_websocket(
                 await fail_call_handshake(writer, "OpenClaw talk bridge is not available")
                 return
             try:
-                openclaw_bridge = OpenClawTalkBridge(mic_source="hub")
+                openclaw_bridge = OpenClawTalkBridge(mic_source="hub", tap=tap)
                 await openclaw_bridge.start_audio()
                 active_openclaw = openclaw_bridge
                 LOG.info("openclaw playback+talk handshake ready")
@@ -672,6 +683,20 @@ async def handle_websocket(
         except (PipewireLinkError, RuntimeError) as exc:
             await fail_call_handshake(writer, f"hub pipewire handshake failed: {exc}")
             return
+
+        if tap is not None and not loopback and OPENCLAW_TALK_MODE == "webrtc-ui":
+            await tap.start_source(
+                "openclaw-mic-48k-stereo",
+                f"{PHONE_UPLINK_SINK}.monitor",
+                48000,
+                2,
+            )
+            await tap.start_source(
+                "openclaw-spk-48k-stereo",
+                OPENCLAW_DOWNLINK_MONITOR,
+                48000,
+                2,
+            )
 
         if openclaw_bridge is not None:
             try:
@@ -735,13 +760,16 @@ async def handle_websocket(
                 await watchdog_task
             except asyncio.CancelledError:
                 pass
-        await bridge.stop()
-        active_bridge = None
-        call_busy = False
+        if bridge is not None:
+            await bridge.stop()
+        if tap is not None:
+            last_call_tap = await tap.close()
         if openclaw_bridge is not None:
             await openclaw_bridge.stop()
             active_openclaw = None
             LOG.info("openclaw talk stopped (mode=%s)", OPENCLAW_TALK_MODE)
+        active_bridge = None
+        call_busy = False
         LOG.info("WebSocket disconnected")
 
 
@@ -773,6 +801,8 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 "mode": current_mode,
                 "openclaw_talk": OPENCLAW_TALK_MODE,
             }
+            if last_call_tap:
+                body["last_call_tap"] = last_call_tap
             if OPENCLAW_TALK_MODE == "webrtc-ui" and get_talk_ui is not None:
                 try:
                     body["talk"] = await get_talk_ui().health()

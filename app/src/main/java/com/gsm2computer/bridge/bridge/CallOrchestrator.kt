@@ -18,6 +18,9 @@ import com.gsm2computer.bridge.rtp.RtpSession
  * Bridges GSM call audio to a remote hub over WebSocket ([MediaTransport]).
  *
  * Inbound flow: GSM rings → answer → open hub stream → full-duplex audio.
+ *
+ * One live call (ADR 0004). A waiting GSM leg is rejected; its teardown
+ * must not hang up the bridged call or restore the mixer.
  */
 class CallOrchestrator(
     private val context: Context,
@@ -89,7 +92,11 @@ class CallOrchestrator(
     }
 
     override fun onIncomingGsmCall(call: Call, number: String) {
+        if (call === activeGsmCall) {
+            return
+        }
         if (bridgeState != BridgeState.IDLE) {
+            Log.w(TAG, "Rejecting waiting GSM call from $number (live $bridgeState)")
             GsmCallManager.rejectCall(call)
             return
         }
@@ -111,6 +118,11 @@ class CallOrchestrator(
     }
 
     override fun onGsmCallActive(call: Call) {
+        if (activeGsmCall != null && call !== activeGsmCall) {
+            Log.w(TAG, "Ignoring STATE_ACTIVE for non-live GSM call")
+            GsmCallManager.rejectCall(call)
+            return
+        }
         activeGsmCall = call
         if (streamBridgePending) {
             streamBridgePending = false
@@ -123,8 +135,8 @@ class CallOrchestrator(
     }
 
     override fun onGsmCallStateChanged(call: Call, state: Int) {
-        if (activeGsmCall == null && bridgeState != BridgeState.IDLE) {
-            activeGsmCall = call
+        if (call !== activeGsmCall) {
+            return
         }
         if (state == Call.STATE_DISCONNECTED && bridgeState != BridgeState.IDLE) {
             tearDown("GSM call disconnected")
@@ -132,6 +144,10 @@ class CallOrchestrator(
     }
 
     override fun onGsmCallEnded(call: Call) {
+        if (call !== activeGsmCall) {
+            Log.i(TAG, "Waiting/rejected GSM call ended; live call unchanged")
+            return
+        }
         if (bridgeState != BridgeState.IDLE) {
             tearDown("GSM call ended")
         }

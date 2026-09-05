@@ -32,7 +32,7 @@ object GsmCallManager {
     /** Active device profile — initialized on first use. */
     val profile: DeviceProfile by lazy { DeviceProfile.detect() }
 
-    // Current active GSM call
+    // The bridged GSM call only. A waiting/rejected leg must not replace this.
     @Volatile var activeCall: Call? = null; private set
     @Volatile var activeCallState: Int = Call.STATE_NEW; private set
     @Volatile var inCallService: InCallService? = null; private set
@@ -76,14 +76,17 @@ object GsmCallManager {
 
     fun onCallAdded(call: Call, service: InCallService) {
         inCallService = service
-        activeCall = call
-        activeCallState = call.state
+        val waiting = isWaitingGsmCall(activeCall, call)
+        if (!waiting) {
+            activeCall = call
+            activeCallState = call.state
+        }
 
         val number = call.details?.handle?.schemeSpecificPart ?: "unknown"
 
         when (call.state) {
             Call.STATE_RINGING -> {
-                Log.i(TAG, "Incoming GSM call from $number")
+                Log.i(TAG, "Incoming GSM call from $number waiting=$waiting")
                 // Silence the ringtone immediately — this is a gateway device,
                 // not a user-facing phone.  The call will be auto-answered
                 // once the SIP leg is established.
@@ -95,14 +98,23 @@ object GsmCallManager {
                 }
                 if (listener != null) {
                     listener?.onIncomingGsmCall(call, number)
-                } else {
+                } else if (!waiting) {
                     notifyStandaloneDialer(service, number)
                 }
             }
             Call.STATE_DIALING, Call.STATE_CONNECTING -> {
+                if (waiting) {
+                    Log.w(TAG, "Ignoring outgoing GSM $number; live call already tracked")
+                    return
+                }
                 Log.i(TAG, "Outgoing GSM call to $number")
             }
             Call.STATE_ACTIVE -> {
+                if (waiting) {
+                    Log.w(TAG, "Second GSM call $number went ACTIVE; not stealing mixer")
+                    listener?.onIncomingGsmCall(call, number)
+                    return
+                }
                 Log.i(TAG, "GSM call active: $number")
                 configureAudioBridge()
                 listener?.onGsmCallActive(call)
@@ -111,8 +123,12 @@ object GsmCallManager {
     }
 
     fun onCallRemoved(call: Call) {
+        if (isWaitingGsmCall(activeCall, call)) {
+            Log.i(TAG, "Non-live GSM call removed; live call unchanged")
+            return
+        }
         Log.i(TAG, "GSM call removed")
-        if (activeCall == call) {
+        if (activeCall === call) {
             activeCall = null
             activeCallState = Call.STATE_DISCONNECTED
         }
@@ -121,7 +137,10 @@ object GsmCallManager {
     }
 
     fun onCallStateChanged(call: Call, state: Int) {
-        activeCallState = state
+        val waiting = isWaitingGsmCall(activeCall, call)
+        if (!waiting) {
+            activeCallState = state
+        }
 
         when (state) {
             Call.STATE_RINGING -> {
@@ -129,27 +148,37 @@ object GsmCallManager {
                 // transition to RINGING via the callback.  Without this,
                 // the orchestrator never learns about the incoming call.
                 val number = call.details?.handle?.schemeSpecificPart ?: "unknown"
-                Log.i(TAG, "GSM call ringing: $number (via state change)")
+                Log.i(TAG, "GSM call ringing: $number (via state change) waiting=$waiting")
                 if (listener != null) {
                     listener?.onIncomingGsmCall(call, number)
-                } else {
+                } else if (!waiting) {
                     inCallService?.let { notifyStandaloneDialer(it, number) }
                 }
             }
             Call.STATE_ACTIVE -> {
+                if (waiting) {
+                    Log.w(TAG, "Ignoring STATE_ACTIVE for non-live GSM call")
+                    return
+                }
                 Log.i(TAG, "GSM call active")
                 configureAudioBridge()
                 listener?.onGsmCallActive(call)
             }
             Call.STATE_DISCONNECTED -> {
+                if (waiting) {
+                    Log.i(TAG, "Non-live GSM call disconnected; live call unchanged")
+                    return
+                }
                 Log.i(TAG, "GSM call disconnected")
                 listener?.onGsmCallEnded(call)
-                if (activeCall == call) {
+                if (activeCall === call) {
                     activeCall = null
                 }
             }
         }
-        listener?.onGsmCallStateChanged(call, state)
+        if (!waiting) {
+            listener?.onGsmCallStateChanged(call, state)
+        }
     }
 
     // ── Call control ────────────────────────────────────
@@ -524,3 +553,8 @@ object GsmCallManager {
         return false
     }
 }
+
+/** True when [candidate] is a different object than the live call (call-waiting). */
+internal fun isWaitingGsmCall(live: Any?, candidate: Any): Boolean =
+    live != null && live !== candidate
+

@@ -232,6 +232,7 @@ class OpenClawTalkBridge:
         sample_rate: int = OPENCLAW_SAMPLE_RATE,
         mic_source: str = "pipewire",
         gsm_rate: int = GSM_SAMPLE_RATE,
+        tap: Optional[Any] = None,
     ) -> None:
         self.gateway_url = gateway_url
         self.gateway_token = gateway_token or load_gateway_token()
@@ -245,6 +246,7 @@ class OpenClawTalkBridge:
         self.sample_rate = sample_rate
         self.mic_source = mic_source
         self.gsm_rate = gsm_rate
+        self.tap = tap
         self._client: Optional[OpenClawGatewayClient] = None
         self._session_id: Optional[str] = None
         self._playback: Optional[asyncio.subprocess.Process] = None
@@ -421,6 +423,8 @@ class OpenClawTalkBridge:
         while len(self._mic_buffer) >= AUDIO_CHUNK_BYTES:
             chunk = bytes(self._mic_buffer[:AUDIO_CHUNK_BYTES])
             del self._mic_buffer[:AUDIO_CHUNK_BYTES]
+            if self.tap:
+                self.tap.write_s16("openclaw-append-24k-mono", chunk, self.sample_rate, 1)
             self._enqueue_append(chunk)
 
     def _enqueue_append(self, chunk: bytes) -> None:
@@ -750,6 +754,8 @@ class OpenClawTalkBridge:
             return
         if not pcm:
             return
+        if self.tap:
+            self.tap.write_s16("openclaw-tts-24k-mono", pcm, self.sample_rate, 1)
         rms = audioop.rms(pcm, 2) / 32768.0
         self._audio_frames += 1
         if self._first_audio_frame_at is None:

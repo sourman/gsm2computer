@@ -84,6 +84,8 @@ PAGE_STATE_JS = r"""
     ".agent-chat__voice-status, .agent-chat__talk-status-text, .agent-chat__talk-status"
   );
   const body = (document.body && document.body.innerText || "").slice(0, 800);
+  const composer = document.querySelector(".agent-chat__input textarea, textarea");
+  const composerVal = composer && "value" in composer ? String(composer.value || "") : "";
   return {
     url: location.href,
     title: document.title,
@@ -94,6 +96,7 @@ PAGE_STATE_JS = r"""
     live: !!live,
     hasTokenInput: !!tokenInput,
     statusText: status ? status.textContent.trim() : null,
+    composerLen: composerVal.length,
     pcs: pcs.map((pc) => ({
       connection: pc.connectionState,
       ice: pc.iceConnectionState,
@@ -119,8 +122,24 @@ CLICK_START_JS = r"""
   if (btn.disabled) {
     return {state: "disabled", label: btn.getAttribute("aria-label"), className: btn.className};
   }
+  // OpenClaw's Tap-to-talk handler sends the composer draft if it is
+  // nonempty, and only starts Talk when the box is empty. Leftover
+  // transcript from the previous call would otherwise steal the click.
+  const composer = document.querySelector(".agent-chat__input textarea, textarea");
+  const composerLen = composer && "value" in composer ? String(composer.value || "").length : 0;
+  if (composer && composerLen) {
+    composer.value = "";
+    composer.dispatchEvent(new Event("input", {bubbles: true}));
+    composer.dispatchEvent(new Event("change", {bubbles: true}));
+  }
   btn.click();
-  return {state: "clicked", label: btn.getAttribute("aria-label"), className: btn.className};
+  return {
+    state: "clicked",
+    label: btn.getAttribute("aria-label"),
+    className: btn.className,
+    composerLen,
+    clearedComposer: composerLen > 0,
+  };
 })()
 """
 
@@ -438,6 +457,18 @@ class OpenClawTalkUI:
                 raise TalkUiError(
                     f"Control UI Talk button disabled ({clicked.get('label')})"
                 )
+            if clicked.get("clearedComposer"):
+                LOG.warning(
+                    "cleared leftover composer draft (%s chars) so Tap-to-talk "
+                    "starts Talk instead of sending",
+                    clicked.get("composerLen"),
+                )
+            if clicked.get("state") == "clicked" and not await self._webrtc_in_flight_soon(
+                session, timeout_s=2.5
+            ):
+                LOG.warning("talk click produced no live PeerConnection; retrying")
+                retry = await session.evaluate(CLICK_START_JS)
+                LOG.info("talk click retry: %s", retry)
             state = await self._wait_webrtc(session)
             self.last_state = state
             self.talk_active = True
@@ -611,6 +642,35 @@ class OpenClawTalkUI:
             f"profile {USER_DATA_DIR} url={CONTROL_UI_URL} snippet={((last or {}).get('snippet') or '')[:180]!r}"
         )
 
+    @staticmethod
+    def _webrtc_connected(state: dict[str, Any]) -> bool:
+        pcs = state.get("pcs") or []
+        return any(
+            pc.get("connection") in ("connected", "completed")
+            or pc.get("ice") in ("connected", "completed")
+            for pc in pcs
+        )
+
+    @staticmethod
+    def _webrtc_in_flight(state: dict[str, Any]) -> bool:
+        if state.get("live"):
+            return True
+        for pc in state.get("pcs") or []:
+            if pc.get("connection") in ("new", "connecting", "connected", "completed"):
+                return True
+            if pc.get("ice") in ("new", "checking", "connected", "completed"):
+                return True
+        return False
+
+    async def _webrtc_in_flight_soon(self, session: CdpSession, timeout_s: float) -> bool:
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            state = await session.evaluate(PAGE_STATE_JS)
+            if isinstance(state, dict) and self._webrtc_in_flight(state):
+                return True
+            await asyncio.sleep(0.25)
+        return False
+
     async def _wait_webrtc(self, session: CdpSession) -> dict[str, Any]:
         deadline = time.monotonic() + WEBRTC_TIMEOUT_S
         last: dict[str, Any] = {}
@@ -618,24 +678,18 @@ class OpenClawTalkUI:
             last = await session.evaluate(PAGE_STATE_JS)
             if not isinstance(last, dict):
                 last = {}
-            pcs = last.get("pcs") or []
-            connected = any(
-                pc.get("connection") in ("connected", "completed")
-                or pc.get("ice") in ("connected", "completed")
-                for pc in pcs
-            )
             snippet = str(last.get("snippet") or "")
             status = str(last.get("statusText") or "")
             fatal = ("auth" in status.lower() and "fail" in status.lower()) or "is not configured" in snippet.lower()
             if fatal:
                 raise TalkUiError(f"Control UI Talk failed: {status or snippet[:200]}")
-            if connected or (last.get("live") and pcs):
-                if connected:
-                    return last
+            if self._webrtc_connected(last):
+                return last
             await asyncio.sleep(0.35)
         raise TalkUiError(
             "Control UI Talk WebRTC did not connect "
-            f"(live={last.get('live')} pcs={last.get('pcs')} status={last.get('statusText')!r} "
+            f"(live={last.get('live')} composerLen={last.get('composerLen')} "
+            f"pcs={last.get('pcs')} status={last.get('statusText')!r} "
             f"snippet={(last.get('snippet') or '')[:180]!r})"
         )
 
