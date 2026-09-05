@@ -35,6 +35,8 @@ function hubTokenProxy(): { name: string; configureServer: (server: { middleware
 export default defineConfig({
   plugins: [hubTokenProxy()],
   server: {
+    host: true, // listen on Tailscale/LAN, not just localhost
+    allowedHosts: [".mining-ling.ts.net", "debian-ahmed", "localhost"],
     proxy: {
       "/health": { target: process.env.HUB_URL ?? DEFAULT_HUB, changeOrigin: true },
     },
