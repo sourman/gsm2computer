@@ -27,6 +27,3 @@ simulator/dist/
 # IDE / agent local
 .idea/
 *.iml
-.vscode/
-.cursor/
-.agent/
