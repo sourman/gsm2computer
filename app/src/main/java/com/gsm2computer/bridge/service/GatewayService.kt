@@ -244,10 +244,14 @@ class GatewayService : Service() {
             this, 0, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        // Framework drawables only. Magisk priv-app hot-swap updates the APK file
+        // without PackageManager re-parsing resources, so SystemUI cannot load
+        // app drawables (BadForegroundServiceNotificationException on 0x7f07xxxx)
+        // and the FGS crash-loops.
         val icon = when (state) {
-            NotifState.OK -> R.drawable.ic_notif_check
-            NotifState.WARN -> R.drawable.ic_notif_warning
-            NotifState.ERROR -> R.drawable.ic_notif_cross
+            NotifState.OK -> android.R.drawable.stat_sys_phone_call
+            NotifState.WARN -> android.R.drawable.stat_notify_error
+            NotifState.ERROR -> android.R.drawable.stat_notify_error
         }
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(statusText)
