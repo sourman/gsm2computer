@@ -23,5 +23,13 @@ class SingleCallPolicyTest {
         val live = Any()
         val waiting = Any()
         assertTrue(isWaitingGsmCall(live, waiting))
+        assertFalse(isLiveGsmCall(live, waiting))
+    }
+
+    @Test
+    fun `after the live call is gone a leftover waiting leg is not hangup`() {
+        val leftover = Any()
+        assertFalse(isLiveGsmCall(null, leftover))
+        assertFalse(isWaitingGsmCall(null, leftover))
     }
 }

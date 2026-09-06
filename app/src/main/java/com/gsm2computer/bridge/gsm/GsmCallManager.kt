@@ -123,15 +123,13 @@ object GsmCallManager {
     }
 
     fun onCallRemoved(call: Call) {
-        if (isWaitingGsmCall(activeCall, call)) {
+        if (!isLiveGsmCall(activeCall, call)) {
             Log.i(TAG, "Non-live GSM call removed; live call unchanged")
             return
         }
         Log.i(TAG, "GSM call removed")
-        if (activeCall === call) {
-            activeCall = null
-            activeCallState = Call.STATE_DISCONNECTED
-        }
+        activeCall = null
+        activeCallState = Call.STATE_DISCONNECTED
         restoreAudio()
         listener?.onGsmCallEnded(call)
     }
@@ -165,15 +163,13 @@ object GsmCallManager {
                 listener?.onGsmCallActive(call)
             }
             Call.STATE_DISCONNECTED -> {
-                if (waiting) {
+                if (!isLiveGsmCall(activeCall, call)) {
                     Log.i(TAG, "Non-live GSM call disconnected; live call unchanged")
                     return
                 }
                 Log.i(TAG, "GSM call disconnected")
                 listener?.onGsmCallEnded(call)
-                if (activeCall === call) {
-                    activeCall = null
-                }
+                activeCall = null
             }
         }
         if (!waiting) {
@@ -201,11 +197,14 @@ object GsmCallManager {
         context.startActivity(intent)
     }
 
-    /** Reject a ringing GSM call */
+    /** Drop a waiting GSM call without touching the live bridged call. */
     fun rejectCall(call: Call? = activeCall) {
-        call?.let {
-            Log.i(TAG, "Rejecting GSM call")
-            it.reject(false, "")
+        val target = call ?: return
+        Log.i(TAG, "Rejecting GSM call state=${target.state}")
+        if (target.state == Call.STATE_RINGING || target.state == Call.STATE_NEW) {
+            target.reject(false, "")
+        } else {
+            target.disconnect()
         }
     }
 
@@ -557,4 +556,7 @@ object GsmCallManager {
 /** True when [candidate] is a different object than the live call (call-waiting). */
 internal fun isWaitingGsmCall(live: Any?, candidate: Any): Boolean =
     live != null && live !== candidate
+
+/** True when [candidate] is the tracked live call. Null live is never a match. */
+internal fun isLiveGsmCall(live: Any?, candidate: Any): Boolean = live === candidate
 

@@ -5,7 +5,7 @@
 
 ## Context
 
-The gateway phone is a single-seat OpenClaw Talk splice: one Chromium Talk session, one PipeWire bridge, one 8 kHz μ-law WebSocket. Call-waiting on the SIM still delivers a second `android.telecom.Call` to `GsmCallService` while the first is live. A second simulator (or a second phone) can also open a WebSocket to the hub.
+The gateway phone is a single-seat OpenClaw Talk splice: one Chromium Talk session, one PipeWire bridge, one hub WebSocket. Call-waiting on the SIM still delivers a second `android.telecom.Call` to `GsmCallService` while the first is live. A second simulator (or a second phone) can also open a WebSocket to the hub.
 
 The product is not a PBX. Conferencing, hold, or swapping would mean two Talk sessions, two uplink mixes, and a second Chromium mic — none of which exist.
 
