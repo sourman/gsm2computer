@@ -107,8 +107,11 @@ class RtpSession(
 
     // Capture and playback rates may differ.  VOICE_CALL on MSM8930
     // only initializes at 8 kHz; G.722 decoding outputs 16 kHz PCM.
+    // WS mode takes the highest rate AudioRecord/AudioTrack will init.
     private var captureRate = 8000
     private var playbackRate = 8000
+    @Volatile private var inboundFormat = "audio/pcmu"
+    @Volatile private var inboundRate = 8000
 
     // Audio session ID from AudioRecord (for logging/diagnostics)
     private var audioSessionId: Int = AudioManager.AUDIO_SESSION_ID_GENERATE
@@ -131,7 +134,13 @@ class RtpSession(
             else -> "SRC$source"
         }
         val wideband = payloadType != RtpPacket.PT_PCMA && payloadType != RtpPacket.PT_PCMU
-        return if (wideband) {
+        return if (wsMode) {
+            listOf(
+                SourceConfig(source, "$name@48k", 48000),
+                SourceConfig(source, "$name@16k", 16000),
+                SourceConfig(source, name, 8000),
+            )
+        } else if (wideband) {
             listOf(
                 SourceConfig(source, "$name@16k", 16000),
                 SourceConfig(source, name, 8000)
@@ -182,9 +191,7 @@ class RtpSession(
         }
 
         if (wsMode) {
-            // Open the transport (e.g. OpenAI Realtime WS). Inbound agent audio
-            // arrives via the sink and feeds the same jitter buffer the UDP path
-            // would have filled.
+            notifyHubWire()
             transport?.start(transportSink)
         } else {
             // Send initial RTP keepalive to punch NAT pinhole before audio starts
@@ -207,6 +214,12 @@ class RtpSession(
         listener?.onRtpStarted()
     }
 
+    private fun notifyHubWire() {
+        if (!wsMode) return
+        Log.i(TAG, "hub wire pcm in=$captureRate out=$playbackRate")
+        transport?.configureWire("audio/pcm", captureRate, "audio/pcm", playbackRate)
+    }
+
     /**
      * Initialize AudioRecord and AudioTrack.
      *
@@ -219,9 +232,10 @@ class RtpSession(
      */
     private fun initAudio(): Boolean {
         // Playback rate matches codec output rate.  G.722 decodes to 16 kHz.
-        playbackRate = when (payloadType) {
-            RtpPacket.PT_PCMA, RtpPacket.PT_PCMU -> 8000
-            else -> 16000  // G.722
+        playbackRate = when {
+            wsMode -> 48000
+            payloadType == RtpPacket.PT_PCMA || payloadType == RtpPacket.PT_PCMU -> 8000
+            else -> 16000
         }
 
         // Capture source comes from the device profile (VOICE_CALL by default,
@@ -286,18 +300,6 @@ class RtpSession(
         // AudioTrack output digitally into the modem uplink — there is no
         // acoustic speaker→mic path, so deep-buffer headroom is unnecessary.
         // Writing silence when the jitter buffer is empty prevents underruns.
-        val minPlayBuf = AudioTrack.getMinBufferSize(
-            playbackRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT
-        )
-        val playBufSize = minPlayBuf
-
-        // Profile-controlled playback usage:
-        // USAGE_MEDIA (default / MSM8930): Maps to STREAM_MUSIC.  Qualcomm's
-        // incall_music_enabled=true injects STREAM_MUSIC into voice TX.
-        // USAGE_VOICE_COMMUNICATION (Exynos 9820): Maps to STREAM_VOICE_CALL.
-        // Samsung's HAL may route this into the modem uplink when a voice
-        // call is active.  On Exynos, no incall_music mixer exists, so
-        // USAGE_MEDIA only plays on the speaker without reaching the modem.
         //
         // IMPORTANT: Do NOT use PERFORMANCE_MODE_LOW_LATENCY here.
         // Low-latency forces the HAL to use "low-latency-playback" usecase
@@ -316,23 +318,54 @@ class RtpSession(
             AudioAttributes.USAGE_VOICE_COMMUNICATION -> "VOICE_COMMUNICATION"
             else -> "usage=$usage"
         }
-        val track = AudioTrack.Builder()
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(usage)
-                    .setContentType(contentType)
-                    .build()
+        val playRates = if (wsMode) listOf(48000, 16000, 8000) else listOf(playbackRate)
+        var track: AudioTrack? = null
+        for (rate in playRates) {
+            val minPlayBuf = AudioTrack.getMinBufferSize(
+                rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT
             )
-            .setAudioFormat(
-                AudioFormat.Builder()
-                    .setSampleRate(playbackRate)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+            if (minPlayBuf <= 0) {
+                Log.w(TAG, "AudioTrack @$rate: invalid minBuf=$minPlayBuf")
+                continue
+            }
+            val candidate = try {
+                AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(usage)
+                            .setContentType(contentType)
+                            .build()
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setSampleRate(rate)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .build()
+                    )
+                    .setBufferSizeInBytes(minPlayBuf)
+                    .setTransferMode(AudioTrack.MODE_STREAM)
                     .build()
-            )
-            .setBufferSizeInBytes(playBufSize)
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
+            } catch (e: Exception) {
+                Log.w(TAG, "AudioTrack @$rate failed: ${e.message}")
+                null
+            }
+            if (candidate != null && candidate.state == AudioTrack.STATE_INITIALIZED) {
+                track = candidate
+                playbackRate = rate
+                Log.i(TAG, "AudioTrack OK @$rate Hz (buf=$minPlayBuf)")
+                break
+            }
+            Log.w(TAG, "AudioTrack @$rate: state=${candidate?.state}")
+            candidate?.release()
+        }
+        if (track == null) {
+            Log.e(TAG, "AudioTrack failed at all rates")
+            listener?.onRtpError("AudioTrack init failed")
+            audioRecord?.release()
+            audioRecord = null
+            return false
+        }
         audioTrack = track
 
         // Route playback to TYPE_TELEPHONY (modem TX uplink) on devices where
@@ -473,23 +506,35 @@ class RtpSession(
     }
 
     /**
-     * Sink for [MediaTransport] (WS mode): inbound agent audio (8 kHz μ-law) is
-     * split into 20ms (160-byte) frames and queued into the same jitter buffer
-     * the UDP receive loop would fill, so the unchanged playback/injection path
-     * pumps it into the GSM uplink. A barge-in flush drops queued agent audio.
+     * Sink for [MediaTransport] (WS mode): inbound agent audio is split into
+     * 20 ms frames and queued into the same jitter buffer the UDP receive
+     * loop would fill. PCM is s16le; μ-law is still accepted so a hub that
+     * has not switched yet (and the simulator path) keeps working.
      */
     private val transportSink = object : MediaTransport.Sink {
-        override fun onAudio(mulaw: ByteArray) {
+        override fun onAudio(frame: ByteArray, format: String, rate: Int) {
+            val fmt = format.ifBlank { "audio/pcmu" }
+            val hz = if (rate > 0) rate else 8000
+            if (fmt != inboundFormat || hz != inboundRate) {
+                jitterBuffer.clear()
+            }
+            inboundFormat = fmt
+            inboundRate = hz
             lastRtpReceivedTime = System.currentTimeMillis()
+            val frameBytes = if (inboundFormat == "audio/pcm") {
+                (inboundRate / 50 * 2).coerceAtLeast(2)
+            } else {
+                (inboundRate / 50).coerceAtLeast(1)
+            }
             var off = 0
-            while (off < mulaw.size) {
-                val end = minOf(off + 160, mulaw.size)
-                val frame = mulaw.copyOfRange(off, end)
+            while (off < frame.size) {
+                val end = minOf(off + frameBytes, frame.size)
+                val slice = frame.copyOfRange(off, end)
                 off = end
                 rxPacketCount++
-                if (!jitterBuffer.offer(frame)) {
-                    jitterBuffer.poll()   // drop oldest under sustained backlog
-                    jitterBuffer.offer(frame)
+                if (!jitterBuffer.offer(slice)) {
+                    jitterBuffer.poll()
+                    jitterBuffer.offer(slice)
                 }
             }
         }
@@ -583,6 +628,7 @@ class RtpSession(
 
         waitForCaptureWarmup()
         probeIncallCaptureHalOnce()
+        notifyHubWire()
 
         record.startRecording()
         Log.i(
@@ -591,7 +637,10 @@ class RtpSession(
                 "gain=${captureGain}x profile=${profile.name} state=${record.recordingState}"
         )
         // Also report via RTP stats so it appears in the app log viewer
-        listener?.onRtpStats("Capture: source=$audioSourceName rate=$captureRate gain=${captureGain}x profile=${profile.name}")
+        listener?.onRtpStats(
+            "Capture: source=$audioSourceName rate=$captureRate halRate=${record.sampleRate} " +
+                "gain=${captureGain}x profile=${profile.name}"
+        )
 
         // Buffer: 20ms of PCM at the actual capture sample rate
         val samplesPerFrame = captureRate / 50  // 160 @ 8kHz, 320 @ 16kHz
@@ -665,6 +714,8 @@ class RtpSession(
                 }
 
                 val shouldForward: Boolean
+                var noiseThis = false
+                var echoThis = false
                 // When playback routes to TYPE_TELEPHONY (modem TX), audio goes
                 // directly to the GSM uplink — no acoustic speaker→mic echo.
                 // Skip echo gate entirely and only apply noise gate.
@@ -672,6 +723,7 @@ class RtpSession(
                     if (rawCaptureRms < noiseGateThreshold) {
                         shouldForward = false
                         noiseGatedFrames++
+                        noiseThis = true
                     } else {
                         shouldForward = true
                         forwardedFrames++
@@ -696,11 +748,13 @@ class RtpSession(
                         }
                         shouldForward = false
                         echoGatedFrames++
+                        echoThis = true
                     }
                 } else if (rawCaptureRms < noiseGateThreshold) {
                     // Noise gate: only modem digital noise, no caller speech.
                     shouldForward = false
                     noiseGatedFrames++
+                    noiseThis = true
                 } else {
                     // Caller speaking, agent silent — forward normally.
                     shouldForward = true
@@ -725,42 +779,43 @@ class RtpSession(
                     captureRms = 0
                 }
 
-                // Encode based on codec and capture sample rate.
-                // G.722 expects 16 kHz PCM; if capture is 8 kHz, upsample first.
-                val encoded = when (payloadType) {
-                    RtpPacket.PT_G722 -> {
-                        val pcm16k = if (captureRate == 8000) upsample8kTo16k(pcmBuf) else pcmBuf
-                        g722Encoder.encode(pcm16k)
-                    }
-                    RtpPacket.PT_PCMA -> {
-                        if (captureRate == 8000) PcmaCodec.encode8k(pcmBuf)
-                        else PcmaCodec.encode(pcmBuf)
-                    }
-                    RtpPacket.PT_PCMU -> {
-                        if (captureRate == 8000) PcmuCodec.encode8k(pcmBuf)
-                        else PcmuCodec.encode(pcmBuf)
-                    }
-                    else -> {
-                        val pcm16k = if (captureRate == 8000) upsample8kTo16k(pcmBuf) else pcmBuf
-                        g722Encoder.encode(pcm16k)
-                    }
-                }
-
-                // Log first 3 packets with raw PCM + encoded for debugging
-                if (txPacketCount < 3) {
-                    val hexHead = encoded.take(16).joinToString(" ") { "%02X".format(it) }
-                    // Raw PCM hex: first 32 bytes (16 samples) to confirm buffer content
-                    val pcmHex = pcmBuf.take(32).joinToString(" ") { "%02X".format(it) }
-                    Log.i(TAG, "TX#$txPacketCount: rawRMS=$rawCaptureRms capRMS=$captureRms pcm=[$pcmHex] enc=[$hexHead]")
-                    if (txPacketCount == 0L) firstTxInfo = "capRMS=$captureRms enc=$hexHead"
-                }
-
                 if (wsMode) {
-                    // WS transport: caller audio (μ-law) goes up as
-                    // input_audio_buffer.append. No RTP header, no DTMF keep-alive.
-                    transport?.sendAudio(encoded)
+                    if (txPacketCount < 3) {
+                        Log.i(TAG, "TX#$txPacketCount pcm ${read}B @${captureRate}Hz rawRMS=$rawCaptureRms capRMS=$captureRms")
+                        if (txPacketCount == 0L) firstTxInfo = "pcm ${captureRate}Hz capRMS=$captureRms"
+                    }
+                    transport?.sendAudio(pcmBuf.copyOf(read))
                     txPacketCount++
                 } else {
+                    // Encode based on codec and capture sample rate.
+                    // G.722 expects 16 kHz PCM; if capture is 8 kHz, upsample first.
+                    val encoded = when (payloadType) {
+                        RtpPacket.PT_G722 -> {
+                            val pcm16k = if (captureRate == 8000) upsample8kTo16k(pcmBuf) else pcmBuf
+                            g722Encoder.encode(pcm16k)
+                        }
+                        RtpPacket.PT_PCMA -> {
+                            if (captureRate == 8000) PcmaCodec.encode8k(pcmBuf)
+                            else PcmaCodec.encode(pcmBuf)
+                        }
+                        RtpPacket.PT_PCMU -> {
+                            if (captureRate == 8000) PcmuCodec.encode8k(pcmBuf)
+                            else PcmuCodec.encode(pcmBuf)
+                        }
+                        else -> {
+                            val pcm16k = if (captureRate == 8000) upsample8kTo16k(pcmBuf) else pcmBuf
+                            g722Encoder.encode(pcm16k)
+                        }
+                    }
+
+                    // Log first 3 packets with raw PCM + encoded for debugging
+                    if (txPacketCount < 3) {
+                        val hexHead = encoded.take(16).joinToString(" ") { "%02X".format(it) }
+                        val pcmHex = pcmBuf.take(32).joinToString(" ") { "%02X".format(it) }
+                        Log.i(TAG, "TX#$txPacketCount: rawRMS=$rawCaptureRms capRMS=$captureRms pcm=[$pcmHex] enc=[$hexHead]")
+                        if (txPacketCount == 0L) firstTxInfo = "capRMS=$captureRms enc=$hexHead"
+                    }
+
                     val destAddr = latchedAddr ?: defaultRemoteInet!!
                     val destPort = if (latchedAddr != null) latchedPort else remotePort
 
@@ -883,7 +938,7 @@ class RtpSession(
                         "rate=${captureRate}/${playbackRate} jbuf=${jitterBuffer.size} " +
                         "gates:echo=$echoGatedFrames noise=$noiseGatedFrames fwd=$forwardedFrames dt=$doubleTalkFrames echoG=${"%.2f".format(echoGainRatio)}" +
                         "$cpuInfo$volInfo"
-                Log.d(TAG, stats) // Keep detailed stats in debug log
+                Log.i(TAG, stats)
 
 
                 // The inactivity timeout is UDP-only. In WS mode there is no
@@ -965,9 +1020,9 @@ class RtpSession(
                     continue
                 }
 
-                // Decode based on codec.  G.722 outputs 16 kHz natively;
-                // PCMA always decodes to 8 kHz (playbackRate==8000).
-                val pcm = when (payloadType) {
+                val pcm = if (wsMode) {
+                    decodeHubFrame(encoded)
+                } else when (payloadType) {
                     RtpPacket.PT_G722 -> g722Decoder.decodeToBytes(encoded)
                     RtpPacket.PT_PCMA -> {
                         if (playbackRate == 8000) PcmaCodec.decode8k(encoded)
@@ -1077,6 +1132,43 @@ class RtpSession(
             output[i * 4 + 3] = ((mid shr 8) and 0xFF).toByte()
         }
         return output
+    }
+
+    /** Linear-interpolate PCM16le [src] from [srcRate] onto [dstRate]. */
+    private fun resamplePcm16(src: ByteArray, srcRate: Int, dstRate: Int): ByteArray {
+        if (srcRate <= 0 || dstRate <= 0 || src.size < 2) return src
+        if (srcRate == dstRate) return src
+        val srcSamples = src.size / 2
+        val dstSamples = (srcSamples.toLong() * dstRate / srcRate).toInt().coerceAtLeast(1)
+        val dst = ByteArray(dstSamples * 2)
+        for (i in 0 until dstSamples) {
+            val srcIndex = i.toDouble() * (srcSamples - 1).coerceAtLeast(0) / (dstSamples - 1).coerceAtLeast(1)
+            val i0 = srcIndex.toInt().coerceIn(0, srcSamples - 1)
+            val i1 = (i0 + 1).coerceAtMost(srcSamples - 1)
+            val frac = srcIndex - i0
+            val s0 = sampleAt(src, i0)
+            val s1 = sampleAt(src, i1)
+            val s = (s0 + (s1 - s0) * frac).toInt().coerceIn(-32768, 32767)
+            dst[i * 2] = (s and 0xFF).toByte()
+            dst[i * 2 + 1] = ((s shr 8) and 0xFF).toByte()
+        }
+        return dst
+    }
+
+    private fun sampleAt(pcm: ByteArray, index: Int): Int {
+        val lo = pcm[index * 2].toInt() and 0xFF
+        val hi = pcm[index * 2 + 1].toInt()
+        return (hi shl 8) or lo
+    }
+
+    private fun decodeHubFrame(encoded: ByteArray): ByteArray {
+        val pcm = if (inboundFormat == "audio/pcm") {
+            encoded
+        } else {
+            PcmuCodec.decode8k(encoded)
+        }
+        val srcRate = if (inboundFormat == "audio/pcm") inboundRate else 8000
+        return resamplePcm16(pcm, srcRate, playbackRate)
     }
 
     /** Compute RMS level of PCM16 little-endian audio buffer (0-32767) */
