@@ -11,7 +11,7 @@ Two OpenClaw Talk transports exist:
 1. **Control UI Talk** — browser WebRTC + ChatGPT OAuth + `gpt-realtime-2.1-mini`. This is the path that already sounded right in a human browser.
 2. **Gateway-relay** — `talk.session.create` / `appendAudio` over the OpenClaw gateway WebSocket (`openclaw_talk_bridge.py`). PCM at 24 kHz, then PipeWire → 8 kHz μ-law for the phone.
 
-The phone and call simulator speak **8 kHz G.711 μ-law** on a WebSocket to `hub.py` (Layer 3, same protocol as the Android bridge). They cannot do WebRTC themselves.
+The phone and call simulator speak a WebSocket to `hub.py` (Layer 3). They cannot do WebRTC themselves. The **simulator** is 8 kHz G.711 μ-law. The **phone** sends native PCM at whatever `AudioRecord` inits (ADR 0005). Missing `format`/`rate` still means μ-law so old clients keep working.
 
 Gateway-relay **rejects** `gpt-realtime-2.1-mini` when OpenAI on the gateway is OAuth-only:
 
@@ -31,7 +31,7 @@ On each GSM/simulator call the hub drives the **same Control UI Talk button** in
 
 ## Consequences
 
-- Phone/simulator audio quality is bounded by 8 kHz μ-law plus the WebRTC path, not by gateway-relay PCM framing.
+- Phone audio quality is bounded by the HAL tap plus WebRTC, not by 8 kHz μ-law (ADR 0005). The simulator is still μ-law.
 - A logged-in Chromium profile and a graphical session (`DISPLAY=:1`) are now part of the production Talk stack (ADR 0003).
 - Control UI Talk and GSM Talk share one OpenClaw session surface; do not “fix” GSM by calling `talk.session.create` for 2.1-mini unless a Platform API key is actually configured.
-- Loopback (`/loopback`) stays μ-law echo with no OpenClaw.
+- Loopback (`/loopback`) echoes whatever the client sent, with no OpenClaw.

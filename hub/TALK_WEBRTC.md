@@ -1,6 +1,6 @@
 # OpenClaw Control UI Talk (WebRTC) — gsm2computer Option C
 
-Phone/simulator μ-law is spliced into the **same Chromium Control UI Talk
+Phone PCM (or simulator μ-law) is spliced into the **same Chromium Control UI Talk
 path** that already sounds right (OAuth + `gpt-realtime-2.1-mini` + WebRTC).
 The hub does **not** call `talk.session.create` (gateway-relay) unless
 `GSM2COMPUTER_OPENCLAW_TALK=relay`.
@@ -8,10 +8,10 @@ The hub does **not** call `talk.session.create` (gateway-relay) unless
 ## Audio graph
 
 ```
-phone μ-law WS → hub pw-cat → phone_uplink sink
+phone PCM or μ-law WS → hub resample → pw-cat s16 48 kHz → phone_uplink sink
 phone_uplink.monitor → Chromium PULSE_SOURCE (mic)
 Chromium PULSE_SINK → openclaw_bus
-openclaw_bus.monitor → hub pw-record → μ-law WS → phone
+openclaw_bus.monitor → hub pw-record s16 48 kHz → resample → WS → phone
 ```
 
 Mix-minus: Chromium must **not** capture `gsm_bus.monitor`, `openclaw_bus.monitor`,

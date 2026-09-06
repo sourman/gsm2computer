@@ -8,6 +8,7 @@ Architecture decisions live in **[docs/adr/](docs/adr/)**. Read those before cha
 | [docs/adr/0002-pipewire-buses-and-mix-minus.md](docs/adr/0002-pipewire-buses-and-mix-minus.md) | `pw-cat` / `pw-record`, buses, mix-minus, serial targets |
 | [docs/adr/0003-talk-chromium-lifecycle.md](docs/adr/0003-talk-chromium-lifecycle.md) | Talk Chromium restart, CDP, profile, DISPLAY |
 | [docs/adr/0004-one-live-call.md](docs/adr/0004-one-live-call.md) | Second GSM/simulator inbound is reject/409; must not tear down the live call |
+| [docs/adr/0005-native-pcm-hub-wire.md](docs/adr/0005-native-pcm-hub-wire.md) | Phone PCM at HAL rate; hub 48 kHz. Missing fields = 8 kHz μ-law |
 | [hub/TALK_WEBRTC.md](hub/TALK_WEBRTC.md) | Commands, first DCV login, env knobs |
 
 ## Hard rules for this repo
@@ -18,6 +19,7 @@ Architecture decisions live in **[docs/adr/](docs/adr/)**. Read those before cha
 - `pw-record` stdout on a pipe must stay **unbuffered** (`stdbuf -o0`); 4 KiB stdio is a 128 ms dropout at 8 kHz stereo.
 - Dedicated Talk Chromium profile only (`chromium-openclaw-talk`). Do not attach the operator’s daily Chrome for production Talk.
 - One live call (ADR 0004). A waiting GSM leg or second hub WebSocket is rejected; it must not hang up the established call or steal the mixer.
+- Phone WS audio is native PCM at the HAL rate (ADR 0005). The hub resamples to 48 kHz. Deploy hub and APK together. Simulator omits `format`/`rate` and stays 8 kHz μ-law.
 - Do not commit gateway tokens, `#token=` URLs, or CDP ports bound to non-localhost.
 
 Android GSM silencing / priv-app notes: [docs/VOICE_CALL_SILENCING_INVESTIGATION.md](docs/VOICE_CALL_SILENCING_INVESTIGATION.md).

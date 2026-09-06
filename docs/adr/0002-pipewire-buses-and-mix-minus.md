@@ -6,7 +6,7 @@
 
 ## Context
 
-The hub machine (safwat-eu) has no GSM codec. Call audio is 8 kHz μ-law on a WebSocket. OpenClaw Control UI Talk (ADR 0001) is a Chromium process that captures a Pulse **source** and plays to a Pulse **sink** at the graph rate (48 kHz).
+The hub machine (safwat-eu) has no GSM codec. Call audio arrives on a WebSocket as **PCM s16le at the client rate**, or as **8 kHz μ-law** when `format`/`rate` are omitted (simulator). OpenClaw Control UI Talk (ADR 0001) is a Chromium process that captures a Pulse **source** and plays to a Pulse **sink** at the graph rate (48 kHz). The hub resamples onto that graph (ADR 0005).
 
 If Chromium captured `openclaw_bus.monitor` or `gsm_bus.monitor`, TTS would loop back into the mic (howl / agent talking to itself). Capture must be a **mix-minus**: uplink only, never the Talk downlink.
 
@@ -20,7 +20,7 @@ Null sinks from `hub/setup-audio-bus.sh`:
 
 | Sink | Role |
 |------|------|
-| `phone_uplink` | Hub plays GSM/simulator μ-law here (webrtc-ui mode) |
+| `phone_uplink` | Hub plays resampled caller PCM here (webrtc-ui mode) |
 | `openclaw_bus` | Chromium speaker; hub records `.monitor` for phone downlink |
 | `gsm_bus` | Legacy / switchboard GSM patch; still linked `openclaw_bus → gsm_bus` for the openclaw preset |
 | `whatsapp_bus`, `telegram_bus` | Reserved |
@@ -28,10 +28,10 @@ Null sinks from `hub/setup-audio-bus.sh`:
 **webrtc-ui graph**
 
 ```
-phone μ-law WS → hub pw-cat → phone_uplink
+phone PCM or μ-law WS → hub resample → pw-cat s16 48 kHz → phone_uplink
 phone_uplink.monitor → Chromium PULSE_SOURCE (mic)
 Chromium PULSE_SINK → openclaw_bus
-openclaw_bus.monitor → hub pw-record → μ-law WS → phone
+openclaw_bus.monitor → hub pw-record s16 48 kHz → resample → WS → phone
 ```
 
 Chromium must **not** capture `gsm_bus.monitor`, `openclaw_bus.monitor`, or `AWS-Virtual-Microphone`. Bind playback/record by serial, wait until linked, fail the handshake on mismatch (`hub/pipewire_target.py`).
@@ -41,5 +41,5 @@ Hub helpers run under `stdbuf -o0 -i0`, `--latency 20ms`, and `PIPEWIRE_LATENCY=
 ## Consequences
 
 - Switchboard `openclaw` preset still patches `openclaw_bus` monitor into `gsm_bus` for hardware/GSM injection; WS downlink records `openclaw_bus.monitor` directly.
-- Graph clock is 48 kHz-only on this host; 8 kHz clients are resampled. That is acceptable for μ-law. Do not “fix” quality by adding a second Talk transport.
+- Graph clock is 48 kHz-only on this host (ADR 0005). 8 kHz μ-law clients are resampled. Do not “fix” quality by adding a second Talk transport.
 - Simulator playout should keep a short jitter buffer; it has no WebRTC jitter buffer of its own.
