@@ -36,8 +36,17 @@ check_java() {
 }
 
 check_android_sdk() {
-    # Find Android SDK
-    if [ -z "$ANDROID_HOME" ] && [ -z "$ANDROID_SDK_ROOT" ]; then
+    # Ignore stale ANDROID_HOME / ANDROID_SDK_ROOT that point at a missing dir
+    # (e.g. $HOME/Android/sdk when the real SDK is /opt/android-sdk).
+    if [ -n "${ANDROID_HOME:-}" ] && [ ! -d "$ANDROID_HOME" ]; then
+        echo "WARNING: ANDROID_HOME=$ANDROID_HOME does not exist; ignoring"
+        unset ANDROID_HOME
+    fi
+    if [ -n "${ANDROID_SDK_ROOT:-}" ] && [ ! -d "$ANDROID_SDK_ROOT" ]; then
+        echo "WARNING: ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT does not exist; ignoring"
+        unset ANDROID_SDK_ROOT
+    fi
+    if [ -z "${ANDROID_HOME:-}" ] && [ -z "${ANDROID_SDK_ROOT:-}" ]; then
         for dir in "/opt/android-sdk" "$HOME/Android/Sdk" "$HOME/android-sdk"; do
             if [ -d "$dir" ]; then
                 export ANDROID_HOME="$dir"
@@ -46,6 +55,8 @@ check_android_sdk() {
         done
     fi
     ANDROID_HOME="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+    export ANDROID_HOME
+    export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
 
     if [ -z "$ANDROID_HOME" ] || [ ! -d "$ANDROID_HOME" ]; then
         echo "ERROR: Android SDK not found. Run: sudo ./setup.sh"
@@ -224,20 +235,32 @@ build_magisk() {
 # ── Install to device (if connected via ADB) ────────
 
 install_to_device() {
-    if command -v adb &>/dev/null && adb devices 2>/dev/null | grep -q "device$"; then
+    # Magisk priv-app deploys go through deploy.sh. This user-app install is
+    # optional and must not fail the build when several devices are attached.
+    if ! command -v adb &>/dev/null; then
         echo ""
-        echo "=== Device detected — installing ==="
-        adb install -r "$SCRIPT_DIR/gateway.apk"
-        echo "APK installed."
-        echo ""
-        echo "To install Magisk module:"
-        echo "  adb push gateway-magisk.zip /sdcard/"
-        echo "  Then install via Magisk Manager on the device."
-    else
+        echo "No adb in PATH. APK is at $SCRIPT_DIR/gateway.apk"
+        return
+    fi
+    mapfile -t devices < <(adb devices 2>/dev/null | awk 'NR>1 && $2=="device" {print $1}')
+    if [ "${#devices[@]}" -eq 0 ]; then
         echo ""
         echo "No ADB device connected. To install manually:"
-        echo "  adb install gateway.apk"
-        echo "  adb push gateway-magisk.zip /sdcard/"
+        echo "  ./deploy.sh -s SERIAL"
+        return
+    fi
+    if [ "${#devices[@]}" -gt 1 ]; then
+        echo ""
+        echo "Multiple ADB devices (${devices[*]}) — skip adb install."
+        echo "Deploy with: ./deploy.sh -s SERIAL"
+        return
+    fi
+    echo ""
+    echo "=== Device detected — installing ==="
+    if adb -s "${devices[0]}" install -r "$SCRIPT_DIR/gateway.apk"; then
+        echo "APK installed on ${devices[0]}."
+    else
+        echo "WARNING: adb install failed (priv-app devices should use ./deploy.sh)"
     fi
 }
 
