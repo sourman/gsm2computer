@@ -14,15 +14,11 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
- * μ-law WebSocket transport for the GSM bridge.
- *
- * OpenAI Realtime (GA): ephemeral token + `wss://api.openai.com/v1/realtime`,
- * `session.update`, and an initial `response.create` greeting.
+ * WebSocket transport for the GSM bridge.
  *
  * Custom hub: token from `{hub}/token`, WebSocket upgrade on the same host.
- * Session instructions and the opening greeting are hub-owned — the phone
- * still speaks the μ-law event protocol (`input_audio_buffer.append` /
- * `response.output_audio.delta`) so the hub can translate onto its audio bus.
+ * Audio is PCM s16le at the rates from [configureWire]. Appends without
+ * format/rate stay 8 kHz μ-law so the browser simulator keeps working.
  */
 class HubStreamClient(
     private val tokenUrl: String,
@@ -42,6 +38,10 @@ class HubStreamClient(
     @Volatile private var ws: WebSocket? = null
     @Volatile private var sink: MediaTransport.Sink? = null
     @Volatile private var closed = false
+    @Volatile private var inputFormat = "audio/pcm"
+    @Volatile private var inputRate = 8000
+    @Volatile private var outputFormat = "audio/pcm"
+    @Volatile private var outputRate = 48000
 
     override fun start(sink: MediaTransport.Sink) {
         this.sink = sink
@@ -73,6 +73,7 @@ class HubStreamClient(
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (hubOwnedSession) {
                     Log.i(TAG, "WS OPEN — hub owns session (skip session.update / greeting)")
+                    sendClientAudio(webSocket)
                     sink.onStatus("Hub WS connected")
                 } else {
                     Log.i(TAG, "WS OPEN — sending session.update")
@@ -124,10 +125,13 @@ class HubStreamClient(
         }
         when {
             type == "response.output_audio.delta" -> {
-                val b64 = JSONObject(text).optString("delta")
+                val json = JSONObject(text)
+                val b64 = json.optString("delta")
                 if (b64.isNotEmpty()) {
                     try {
-                        sink.onAudio(Base64.decode(b64, Base64.DEFAULT))
+                        val fmt = json.optString("format").ifBlank { "audio/pcmu" }
+                        val rate = json.optInt("rate", 8000)
+                        sink.onAudio(Base64.decode(b64, Base64.DEFAULT), fmt, rate)
                     } catch (e: Exception) {
                         Log.w(TAG, "audio delta decode failed: ${e.message}")
                     }
@@ -135,8 +139,9 @@ class HubStreamClient(
             }
             type == "input_audio_buffer.speech_started" -> sink.onFlushPlayback()
             type == "session.updated" -> {
-                Log.i(TAG, "session.updated — μ-law + server_vad active")
+                Log.i(TAG, "session.updated — wire $inputFormat/$inputRate in, $outputFormat/$outputRate out")
                 sink.onStatus("Hub session ready")
+                sendClientAudio(ws)
                 if (!hubOwnedSession) {
                     ws?.send(JSONObject().put("type", "response.create").toString())
                 }
@@ -153,14 +158,42 @@ class HubStreamClient(
         }
     }
 
-    override fun sendAudio(mulaw: ByteArray) {
+    override fun configureWire(
+        inputFormat: String,
+        inputRate: Int,
+        outputFormat: String,
+        outputRate: Int,
+    ) {
+        this.inputFormat = inputFormat
+        this.inputRate = inputRate
+        this.outputFormat = outputFormat
+        this.outputRate = outputRate
+        sendClientAudio(ws)
+    }
+
+    override fun sendAudio(frame: ByteArray) {
         val socket = ws ?: return
-        val b64 = Base64.encodeToString(mulaw, Base64.NO_WRAP)
+        val b64 = Base64.encodeToString(frame, Base64.NO_WRAP)
         val msg = JSONObject()
             .put("type", "input_audio_buffer.append")
             .put("audio", b64)
+            .put("format", inputFormat)
+            .put("rate", inputRate)
             .toString()
         socket.send(msg)
+    }
+
+    private fun sendClientAudio(socket: WebSocket?) {
+        if (socket == null) return
+        val input = JSONObject().put("format", inputFormat).put("rate", inputRate)
+        val output = JSONObject().put("format", outputFormat).put("rate", outputRate)
+        val msg = JSONObject()
+            .put("type", "client.audio")
+            .put("input", input)
+            .put("output", output)
+            .toString()
+        socket.send(msg)
+        Log.i(TAG, "client.audio in=$inputFormat/$inputRate out=$outputFormat/$outputRate")
     }
 
     override fun stop() {
