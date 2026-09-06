@@ -498,6 +498,9 @@ class RtpSession(
 
         try { transport?.stop() } catch (_: Exception) {}
 
+        captureTap?.close()
+        captureTap = null
+
         socket?.close()
         socket = null
         jitterBuffer.clear()
@@ -641,6 +644,17 @@ class RtpSession(
             "Capture: source=$audioSourceName rate=$captureRate halRate=${record.sampleRate} " +
                 "gain=${captureGain}x profile=${profile.name}"
         )
+        captureTap = CaptureTap.open(
+            context,
+            audioSourceName,
+            captureRate,
+            record.sampleRate,
+            captureGain,
+            noiseGateThreshold,
+            echoGateThreshold,
+            profile.name,
+            profile.routing.playbackToTelephony,
+        )
 
         // Buffer: 20ms of PCM at the actual capture sample rate
         val samplesPerFrame = captureRate / 50  // 160 @ 8kHz, 320 @ 16kHz
@@ -687,6 +701,8 @@ class RtpSession(
                             try { record.stop() } catch (_: Exception) {}
                             record.release()
                             audioRecord = null
+                            captureTap?.close()
+                            captureTap = null
                             return false  // Signal caller to fail the call (no fallback)
                         }
                     } else {
@@ -760,6 +776,7 @@ class RtpSession(
                     shouldForward = true
                 }
 
+                captureTap?.writePre(pcmBuf, read)
                 if (shouldForward) {
                     // Apply gain boost
                     if (captureGain > 1) {
@@ -778,6 +795,15 @@ class RtpSession(
                     java.util.Arrays.fill(pcmBuf, 0, read, 0.toByte())
                     captureRms = 0
                 }
+                captureTap?.writePost(pcmBuf, read)
+                captureTap?.noteFrame(
+                    rawCaptureRms,
+                    captureRms,
+                    shouldForward,
+                    noiseThis,
+                    echoThis,
+                    decayingPlaybackRms,
+                )
 
                 if (wsMode) {
                     if (txPacketCount < 3) {
@@ -831,6 +857,8 @@ class RtpSession(
                 if (running.get()) Log.e(TAG, "Capture error: ${e.message}")
             }
         }
+        captureTap?.close()
+        captureTap = null
         return true  // Normal exit (call ended)
     }
 
