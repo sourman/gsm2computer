@@ -1,9 +1,9 @@
 /**
  * Create gsm2computer project tickets in Linear (safwatly workspace).
  *
- * Prereq: mcporter authenticated to safwatly (not compliancy-group):
+ * Prereq: safwatly Linear via mcporter (once per repo):
  *   mcporter auth linear
- *   # approve in browser — pick the safwatly workspace
+ *   # pick safwatly in browser — tokens land in .mcporter/oauth/linear
  *
  * Usage:
  *   bun run scripts/create-linear-tickets.ts --dry-run
