@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""gsm2computer hub: μ-law WebSocket ↔ PipeWire gsm_bus + switchboard control."""
+"""gsm2computer hub: PCM/μ-law WebSocket ↔ PipeWire gsm_bus + switchboard control."""
 from __future__ import annotations
 
 import asyncio
@@ -40,6 +40,9 @@ OPENCLAW_DOWNLINK_MONITOR = os.environ.get(
     "GSM2COMPUTER_OPENCLAW_DOWNLINK_MONITOR", "openclaw_bus.monitor"
 )
 AUDIO_RATE = int(os.environ.get("GSM2COMPUTER_AUDIO_RATE", "8000"))
+# PipeWire buses on safwat-eu are 48 kHz. Clients may send 8 kHz μ-law
+# (simulator) or PCM at whatever the phone HAL gave us; we resample here.
+BUS_RATE = int(os.environ.get("GSM2COMPUTER_BUS_RATE", "48000"))
 AUTO_MODE_ON_CALL = os.environ.get("GSM2COMPUTER_AUTO_MODE", "openclaw")
 
 
@@ -56,6 +59,10 @@ def _parse_openclaw_talk_mode(raw: Optional[str]) -> str:
 OPENCLAW_TALK_MODE = _parse_openclaw_talk_mode(os.environ.get("GSM2COMPUTER_OPENCLAW_TALK", "webrtc-ui"))
 OPENCLAW_TALK_ON_CALL = OPENCLAW_TALK_MODE != "off"
 RECORD_CHUNK = int(os.environ.get("GSM2COMPUTER_RECORD_CHUNK", "160"))
+DEFAULT_CLIENT_FORMAT = "audio/pcmu"
+DEFAULT_CLIENT_RATE = AUDIO_RATE
+PCM_FORMATS = {"audio/pcm", "audio/l16", "pcm"}
+ULAW_FORMATS = {"audio/pcmu", "audio/g711-ulaw", "pcmu", "g711_ulaw"}
 ULAW_BIAS = 0x84
 TTS_ENERGY_WATCHDOG_S = float(os.environ.get("GSM2COMPUTER_TTS_ENERGY_WATCHDOG", "2.5"))
 TTS_WATCHDOG_LOUD_FRAMES = int(os.environ.get("GSM2COMPUTER_TTS_WATCHDOG_LOUD_FRAMES", "8"))
@@ -326,6 +333,44 @@ def _mulaw_rms_energy(ulaw: bytes) -> float:
     return (sum_sq / len(ulaw)) ** 0.5
 
 
+def _pcm_rms_energy(pcm: bytes) -> float:
+    if not pcm or len(pcm) < 2:
+        return 0.0
+    return audioop.rms(pcm, 2) / 32768.0
+
+
+def _normalize_format(raw: Any) -> str:
+    value = str(raw or "").strip().lower()
+    if value in PCM_FORMATS:
+        return "audio/pcm"
+    if value in ULAW_FORMATS:
+        return "audio/pcmu"
+    return ""
+
+
+def _as_rate(raw: Any, default: int) -> int:
+    try:
+        rate = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return rate if rate > 0 else default
+
+
+def _to_pcm16(audio: bytes, fmt: str) -> bytes:
+    if fmt == "audio/pcm":
+        if len(audio) & 1:
+            audio = audio[:-1]
+        return audio
+    return audioop.ulaw2lin(audio, 2)
+
+
+def _resample_pcm(pcm: bytes, src_rate: int, dst_rate: int, state: Any) -> Tuple[bytes, Any]:
+    if src_rate == dst_rate:
+        return pcm, state
+    converted, new_state = audioop.ratecv(pcm, 2, 1, src_rate, dst_rate, state)
+    return converted, new_state
+
+
 def parse_sms_command(body: str) -> Optional[str]:
     text = (body or "").strip()
     if not text:
@@ -353,6 +398,14 @@ class PipewireBridge:
         self.downlink_energy_ticks = 0
         self.playback_linked = False
         self.record_linked = False
+        self.client_in_format = DEFAULT_CLIENT_FORMAT
+        self.client_in_rate = DEFAULT_CLIENT_RATE
+        self.client_out_format = DEFAULT_CLIENT_FORMAT
+        self.client_out_rate = DEFAULT_CLIENT_RATE
+        self._in_ratecv: Any = None
+        self._out_ratecv: Any = None
+        self._in_src_rate = DEFAULT_CLIENT_RATE
+        self._out_dst_rate = DEFAULT_CLIENT_RATE
 
     def _track_helper(self, proc: asyncio.subprocess.Process, label: str) -> None:
         self._helper_tasks.append(asyncio.create_task(self._log_helper_stderr(proc, label)))
@@ -406,7 +459,7 @@ class PipewireBridge:
             "--channels",
             "1",
             "--format",
-            "ulaw",
+            "s16",
             "-",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.DEVNULL,
@@ -465,10 +518,45 @@ class PipewireBridge:
             record_downlink,
         )
 
+    def set_client_audio(
+        self,
+        input_format: str,
+        input_rate: int,
+        output_format: str,
+        output_rate: int,
+    ) -> None:
+        in_fmt = _normalize_format(input_format) or DEFAULT_CLIENT_FORMAT
+        out_fmt = _normalize_format(output_format) or DEFAULT_CLIENT_FORMAT
+        in_rate = _as_rate(input_rate, DEFAULT_CLIENT_RATE)
+        out_rate = _as_rate(output_rate, BUS_RATE if out_fmt == "audio/pcm" else DEFAULT_CLIENT_RATE)
+        if (
+            in_fmt != self.client_in_format
+            or in_rate != self.client_in_rate
+            or out_fmt != self.client_out_format
+            or out_rate != self.client_out_rate
+        ):
+            LOG.info(
+                "client.audio in=%s/%s out=%s/%s",
+                in_fmt,
+                in_rate,
+                out_fmt,
+                out_rate,
+            )
+        if in_rate != self._in_src_rate:
+            self._in_ratecv = None
+            self._in_src_rate = in_rate
+        if out_rate != self._out_dst_rate:
+            self._out_ratecv = None
+            self._out_dst_rate = out_rate
+        self.client_in_format = in_fmt
+        self.client_in_rate = in_rate
+        self.client_out_format = out_fmt
+        self.client_out_rate = out_rate
+
     async def _pump_out(self, ws_writer: asyncio.StreamWriter) -> None:
         assert self._record and self._record.stdout
-        # 20 ms of stereo s16le at AUDIO_RATE.
-        read_size = RECORD_CHUNK * 2 * 2
+        # 20 ms of stereo s16le at the PipeWire bus rate.
+        read_size = self.rate // 50 * 2 * 2
         nonzero = 0
         while not self._closed:
             try:
@@ -490,9 +578,25 @@ class PipewireBridge:
                 self.downlink_energy_ticks = nonzero
                 if nonzero == 1 or nonzero % 50 == 0:
                     LOG.info("downlink energy l=%.3f r=%.3f", energy_l, energy_r)
+            out_fmt = self.client_out_format
+            out_rate = self.client_out_rate
+            if out_rate != self._out_dst_rate:
+                self._out_ratecv = None
+                self._out_dst_rate = out_rate
+            payload_pcm, self._out_ratecv = _resample_pcm(
+                mono_pcm, self.rate, out_rate, self._out_ratecv
+            )
+            if out_fmt == "audio/pcm":
+                payload = payload_pcm
+                wire_fmt = "audio/pcm"
+            else:
+                payload = audioop.lin2ulaw(payload_pcm, 2)
+                wire_fmt = "audio/pcmu"
             event = {
                 "type": "response.output_audio.delta",
-                "delta": base64.b64encode(audioop.lin2ulaw(mono_pcm, 2)).decode("ascii"),
+                "delta": base64.b64encode(payload).decode("ascii"),
+                "format": wire_fmt,
+                "rate": out_rate,
                 "channels": {"l": energy_l, "r": energy_r},
             }
             try:
@@ -502,11 +606,25 @@ class PipewireBridge:
         if self._record.returncode is None:
             await self._record.wait()
 
-    async def write_in(self, ulaw: bytes) -> None:
-        if self._closed or not ulaw:
+    async def write_in(self, audio: bytes, fmt: str = "", rate: int = 0) -> None:
+        if self._closed or not audio:
+            return
+        wire_fmt = _normalize_format(fmt) or self.client_in_format
+        src_rate = _as_rate(rate, self.client_in_rate)
+        pcm = _to_pcm16(audio, wire_fmt)
+        if not pcm:
             return
         if self.tap:
-            self.tap.write_ulaw("gsm-uplink-8k-mono", ulaw, self.rate)
+            if wire_fmt == "audio/pcmu":
+                self.tap.write_ulaw("gsm-uplink-8k-mono", audio, src_rate)
+            else:
+                self.tap.write_s16("gsm-uplink-8k-mono", pcm, src_rate, 1)
+        if src_rate != self._in_src_rate:
+            self._in_ratecv = None
+            self._in_src_rate = src_rate
+        bus_pcm, self._in_ratecv = _resample_pcm(pcm, src_rate, self.rate, self._in_ratecv)
+        if not bus_pcm:
+            return
         proc = self._playback
         if not proc or not proc.stdin:
             return
@@ -514,10 +632,20 @@ class PipewireBridge:
             LOG.error("gsm playback write skipped: pw-cat already exited rc=%s", proc.returncode)
             return
         try:
-            proc.stdin.write(ulaw)
+            proc.stdin.write(bus_pcm)
             await proc.stdin.drain()
         except (BrokenPipeError, ConnectionResetError, OSError) as exc:
             LOG.error("gsm playback write failed: %s (pw-cat rc=%s)", exc, proc.returncode)
+
+    def to_ulaw_8k(self, audio: bytes, fmt: str = "", rate: int = 0) -> bytes:
+        """8 kHz μ-law for the legacy relay Talk path."""
+        wire_fmt = _normalize_format(fmt) or self.client_in_format
+        src_rate = _as_rate(rate, self.client_in_rate)
+        pcm = _to_pcm16(audio, wire_fmt)
+        if not pcm:
+            return b""
+        pcm8k, _ = _resample_pcm(pcm, src_rate, 8000, None)
+        return audioop.lin2ulaw(pcm8k, 2)
 
     async def stop(self) -> None:
         if self._closed:
@@ -646,7 +774,7 @@ async def handle_websocket(
             downlink_monitor = OPENCLAW_DOWNLINK_MONITOR
         else:
             downlink_monitor = GSM_MONITOR
-        bridge = PipewireBridge(playback_sink, GSM_MONITOR, AUDIO_RATE, tap=tap)
+        bridge = PipewireBridge(playback_sink, GSM_MONITOR, BUS_RATE, tap=tap)
         if not loopback and OPENCLAW_TALK_MODE == "webrtc-ui":
             if OpenClawTalkUI is None or get_talk_ui is None:
                 await fail_call_handshake(writer, "OpenClaw Control UI Talk supervisor is not available")
@@ -711,7 +839,11 @@ async def handle_websocket(
             "session": {
                 "id": f"hub-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
                 "model": f"gsm2computer-hub-{OPENCLAW_TALK_MODE}" if not loopback else "gsm2computer-hub",
-                "audio": {"format": "audio/pcmu", "rate": AUDIO_RATE},
+                "audio": {
+                    "format": DEFAULT_CLIENT_FORMAT,
+                    "rate": DEFAULT_CLIENT_RATE,
+                    "preferred": {"format": "audio/pcm", "rate": BUS_RATE, "encoding": "s16le"},
+                },
                 "talk": OPENCLAW_TALK_MODE if not loopback else "off",
             },
         }
@@ -736,21 +868,38 @@ async def handle_websocket(
                 continue
 
             etype = event.get("type")
-            if etype == "input_audio_buffer.append":
+            if etype == "client.audio":
+                inp = event.get("input") or {}
+                out = event.get("output") or {}
+                bridge.set_client_audio(
+                    inp.get("format") or "",
+                    inp.get("rate") or 0,
+                    out.get("format") or "",
+                    out.get("rate") or 0,
+                )
+            elif etype == "input_audio_buffer.append":
                 audio_b64 = event.get("audio") or event.get("data") or ""
                 if audio_b64:
-                    ulaw = base64.b64decode(audio_b64, validate=False)
-                    await bridge.write_in(ulaw)
+                    audio = base64.b64decode(audio_b64, validate=False)
+                    fmt = event.get("format") or ""
+                    rate = event.get("rate") or 0
+                    await bridge.write_in(audio, fmt, rate)
                     if loopback:
-                        energy = _mulaw_rms_energy(ulaw)
+                        energy = (
+                            _pcm_rms_energy(_to_pcm16(audio, _normalize_format(fmt) or bridge.client_in_format))
+                            if (_normalize_format(fmt) or bridge.client_in_format) == "audio/pcm"
+                            else _mulaw_rms_energy(audio)
+                        )
                         echo = {
                             "type": "response.output_audio.delta",
-                            "delta": base64.b64encode(ulaw).decode("ascii"),
+                            "delta": base64.b64encode(audio).decode("ascii"),
+                            "format": _normalize_format(fmt) or bridge.client_in_format,
+                            "rate": _as_rate(rate, bridge.client_in_rate),
                             "channels": {"l": energy, "r": energy},
                         }
                         await ws_send_text(writer, json.dumps(echo))
                     elif OPENCLAW_TALK_MODE == "relay" and openclaw_bridge is not None:
-                        openclaw_bridge.feed_gsm_ulaw(ulaw)
+                        openclaw_bridge.feed_gsm_ulaw(bridge.to_ulaw_8k(audio, fmt, rate))
             else:
                 LOG.debug("ws event type=%s", etype)
     finally:
