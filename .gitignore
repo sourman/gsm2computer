@@ -1,11 +1,14 @@
 # Build outputs
 *.apk
+*.idsig
 gateway-magisk.zip
 magisk/system/priv-app/Gateway/
 !magisk/system/priv-app/PermissionController/
 local.properties
 .env
+.env.mcp
 .env.build
+.mcporter/
 recordings/
 
 # Gradle
@@ -15,12 +18,15 @@ app/build/
 
 
 # Python / Node tooling
+__pycache__/
 .venv-signalwire/
 hub-token-worker/node_modules/
 simulator/node_modules/
 simulator/dist/
 
-# IDE
+# IDE / agent local
 .idea/
 *.iml
 .vscode/
+.cursor/
+.agent/
