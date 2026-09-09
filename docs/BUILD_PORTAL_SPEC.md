@@ -1,0 +1,113 @@
+# Build spec: Hub messaging portal (PWA)
+
+Handoff doc for build / review / smoke / QA agents.
+
+## Locked decisions
+
+| Topic | Choice |
+|-------|--------|
+| Call log v1 | Bridge `CallLogStore` → hub; system `CallLog` backfill deferred |
+| Outbound SMS | 10s HTTP poll from `GatewayService` |
+| Auth | Tailscale only (no portal token v1) |
+| Retention | Forever (SQLite) |
+| Call metadata | Full: direction, number, time, duration, switchboard_mode, session/tap summary |
+| HTTPS | Fix Tailscale Serve so `https://ip-172-31-21-244.mining-ling.ts.net` is trusted |
+| PWA | Installable; SSE while open; Web Push after HTTPS works |
+
+## Hub machine
+
+- Tailscale IP: `100.101.181.110:8787` (HTTP today)
+- Hostname: `ip-172-31-21-244.mining-ling.ts.net` (HTTPS via Tailscale Serve — cert currently untrusted in Chrome, must fix)
+- Service: `hub/gsm2computer-hub.service`, working dir `~/gsm2computer-hub`
+- Repo hub code: `hub/hub.py`
+
+## API surface (implement)
+
+```
+GET  /portal/              → PWA static files
+GET  /portal/api/threads           → [{peer, lastBody, lastAt, unread?}]
+GET  /portal/api/messages?peer=+1  → thread messages
+POST /portal/api/messages/send     → {to, body} queue outbound
+GET  /portal/api/calls             → call history
+GET  /portal/api/events            → SSE stream (new message, new call)
+```
+
+Existing `POST /sms` from Pixel: **persist** to SQLite in addition to current logging/routing.
+
+## SQLite schema (suggested)
+
+```sql
+messages(id TEXT PK, direction TEXT, peer TEXT, body TEXT, ts TEXT, status TEXT)
+calls(id TEXT PK, direction TEXT, number TEXT, started_at TEXT, duration_sec INT,
+      switchboard_mode TEXT, session_id TEXT, tap_summary TEXT)
+outbox(id TEXT PK, to_number TEXT, body TEXT, created_at TEXT, status TEXT)
+```
+
+Normalize phone numbers to E.164 where possible.
+
+## Pixel gateway changes
+
+1. `SEND_SMS` in manifest + Magisk `service.sh` grant
+2. On call end in `GatewayService` / `CallOrchestrator`: `POST /calls` with full metadata
+3. Background poll every 10s: `GET /sms/outbox` (or agreed path), send via `SmsManager`, `POST` ack
+4. Do not break existing `POST /sms` inbound forward or `STATUS`/`MODE` routing
+
+## PWA (`hub/portal/`)
+
+- Vite + vanilla or minimal framework
+- Tabs or nav: **Messages** (thread list + conversation), **Calls** (history)
+- Compose bar in thread view
+- `manifest.json`, service worker (installable)
+- Subscribe to SSE for live updates when tab open
+- Mobile-friendly layout
+
+## Tailscale HTTPS
+
+Document and implement fix for trusted cert on hub portal. Options:
+- `tailscale serve https /portal` mapping to local hub
+- Or proxy portal on :8443 with Tailscale-managed cert
+
+Investigate current `:8443` red-lock issue on the hub host.
+
+## Tests
+
+### Smoke (automated, no browser)
+
+- Hub unit/integration: POST /sms persists, GET threads, POST send queues outbox
+- Python tests in `hub/tests/` if pattern exists, else add minimal pytest
+- `HubEndpointsTest` style tests for any new Kotlin URL helpers
+
+### QA (headed chad-browser)
+
+```bash
+chad-browser up --name gsm2portal-qa https://ip-172-31-21-244.mining-ling.ts.net/portal/
+# or http://100.101.181.110:8787/portal/ if HTTPS not ready
+```
+
+Drive: load portal, verify empty state or seed data, simulate message list UI, compose send (may need hub seed or mock outbox).
+
+Use `chad-browser down gsm2portal-qa` only if you launched it.
+
+## Hard rules (repo)
+
+- Do not commit gateway tokens or `#token=` URLs
+- Default Talk mode stays `webrtc-ui`; do not change voice routing ADRs
+- One live call (ADR 0004) — portal work must not break call handshake
+- Deploy hub and APK together when changing wire protocol
+
+## Notify human
+
+If blocked on hub SSH, Tailscale serve config, Pixel ADB, or credentials:
+
+```bash
+/home/ahmed/.agents/skills/qol/qol.py "Blocked on portal build — need your input."
+```
+
+## Review checklist
+
+- [ ] SQLite migrations/idempotent init
+- [ ] POST /sms still routes STATUS/MODE
+- [ ] Outbox poll does not block audio WebSocket thread
+- [ ] PWA works on mobile viewport
+- [ ] No secrets in git
+- [ ] ADR 0006 matches implementation
