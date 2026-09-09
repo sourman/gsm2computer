@@ -211,11 +211,36 @@ class PortalStore:
         }
 
     def list_outbox_pending(self) -> list[dict[str, Any]]:
+        """Rows still in pending (tests / diagnostics only)."""
         with self._lock:
             rows = self._conn.execute(
                 "SELECT * FROM outbox WHERE status = 'pending' ORDER BY created_at ASC"
             ).fetchall()
         return [_row_outbox(r) for r in rows]
+
+    def claim_outbox_for_send(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Atomically lease pending rows as sending so polls cannot double-send."""
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT id FROM outbox WHERE status = 'pending'
+                   ORDER BY created_at ASC LIMIT ?""",
+                (max(1, int(limit)),),
+            ).fetchall()
+            ids = [r["id"] for r in rows]
+            if not ids:
+                self._conn.commit()
+                return []
+            placeholders = ",".join("?" * len(ids))
+            self._conn.execute(
+                f"UPDATE outbox SET status = 'sending' WHERE id IN ({placeholders})",
+                ids,
+            )
+            self._conn.commit()
+            claimed = self._conn.execute(
+                f"SELECT * FROM outbox WHERE id IN ({placeholders})",
+                ids,
+            ).fetchall()
+        return [_row_outbox(r) for r in claimed]
 
     def ack_outbox(self, item_id: str, status: str = "sent", error: Optional[str] = None) -> Optional[dict[str, Any]]:
         status_n = (status or "sent").strip().lower()
@@ -226,6 +251,12 @@ class PortalStore:
             row = self._conn.execute("SELECT * FROM outbox WHERE id = ?", (item_id,)).fetchone()
             if row is None:
                 return None
+            current = row["status"]
+            if current in {"sent", "failed"}:
+                result = _row_outbox(row)
+                if error:
+                    result["error"] = error
+                return result
             self._conn.execute("UPDATE outbox SET status = ? WHERE id = ?", (status_n, item_id))
             self._conn.execute("UPDATE messages SET status = ? WHERE id = ?", (msg_status, item_id))
             self._conn.commit()

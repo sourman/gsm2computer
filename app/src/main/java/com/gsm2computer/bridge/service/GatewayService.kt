@@ -45,6 +45,7 @@ class GatewayService : Service() {
     @Volatile private var stopped = false
     private var notifStatusText = "Ready"
     @Volatile private var outboxGeneration = 0
+    @Volatile private var outboxThread: Thread? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -214,8 +215,16 @@ class GatewayService : Service() {
     }
 
     private fun startOutboxPoller() {
+        outboxThread?.let { prev ->
+            if (prev.isAlive) {
+                try {
+                    prev.join(15_000)
+                } catch (_: InterruptedException) {
+                }
+            }
+        }
         val gen = ++outboxGeneration
-        thread(name = "sms-outbox") {
+        val worker = thread(name = "sms-outbox") {
             while (!stopped && gen == outboxGeneration) {
                 try {
                     SmsOutboxPoller.pollOnce(this@GatewayService)
@@ -229,6 +238,7 @@ class GatewayService : Service() {
                 }
             }
         }
+        outboxThread = worker
     }
 
     private fun isCallActive(): Boolean {

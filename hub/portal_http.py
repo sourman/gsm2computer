@@ -155,7 +155,7 @@ class PortalApp:
             return "handled"
 
         if method == "GET" and route == "/sms/outbox":
-            writer.write(json_response(200, {"ok": True, "items": self.store.list_outbox_pending()}))
+            writer.write(json_response(200, {"ok": True, "items": self.store.claim_outbox_for_send()}))
             return "handled"
 
         ack = OUTBOX_ACK_RE.match(route)

@@ -25,9 +25,10 @@ sudo ss -lptn | grep -E '8787|443|8443'
 tailscale serve reset
 
 # 3. Proxy the MagicDNS HTTPS name to the hub
-tailscale serve --bg --https=443 http://127.0.0.1:8787
+# Hub listens on the Tailscale IP (100.101.181.110), not 127.0.0.1 — use that origin:
+tailscale serve --bg --https=443 http://100.101.181.110:8787
 # If the daemon cannot bind 443, use:
-# tailscale serve --bg http://127.0.0.1:8787
+# tailscale serve --bg http://100.101.181.110:8787
 
 # 4. Confirm
 tailscale serve status

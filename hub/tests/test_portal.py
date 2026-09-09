@@ -85,9 +85,14 @@ class PortalStoreTests(unittest.TestCase):
         self.assertEqual(queued["message"]["status"], "queued")
         pending = self.store.list_outbox_pending()
         self.assertEqual(len(pending), 1)
+        claimed = self.store.claim_outbox_for_send()
+        self.assertEqual(len(claimed), 1)
+        self.assertEqual(claimed[0]["status"], "sending")
+        self.assertEqual(self.store.list_outbox_pending(), [])
         acked = self.store.ack_outbox(queued["id"], status="sent")
         self.assertEqual(acked["status"], "sent")
-        self.assertEqual(self.store.list_outbox_pending(), [])
+        again = self.store.ack_outbox(queued["id"], status="sent")
+        self.assertEqual(again["status"], "sent")
         self.assertEqual(self.store.get_message(queued["id"])["status"], "sent")
 
 
@@ -129,6 +134,11 @@ class PortalHttpTests(unittest.IsolatedAsyncioTestCase):
         items = json.loads(body)["items"]
         self.assertEqual(items[0]["id"], outbox_id)
         self.assertEqual(items[0]["to"], "+15550001111")
+        self.assertEqual(items[0]["status"], "sending")
+
+        writer = FakeWriter()
+        await self.app.dispatch("GET", "/sms/outbox", {}, b"", writer)
+        self.assertEqual(json.loads(_parse_http(bytes(writer.buf))[2])["items"], [])
 
         writer = FakeWriter()
         ack = json.dumps({"status": "sent"}).encode()

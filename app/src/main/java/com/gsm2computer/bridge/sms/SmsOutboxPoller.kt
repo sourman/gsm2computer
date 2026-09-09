@@ -24,6 +24,7 @@ object SmsOutboxPoller {
 
     private const val TAG = "SmsOutbox"
     private val JSON = "application/json; charset=utf-8".toMediaType()
+    private val pollLock = Any()
 
     private val http = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -32,6 +33,12 @@ object SmsOutboxPoller {
         .build()
 
     fun pollOnce(context: Context) {
+        synchronized(pollLock) {
+            pollOnceLocked(context)
+        }
+    }
+
+    private fun pollOnceLocked(context: Context) {
         val hub = BridgeConfig.resolveHubControlUrl(BridgeConfig.openPrefs(context))
         val url = HubEndpoints.smsOutboxUrl(hub)
         if (url.isEmpty()) return

@@ -62,6 +62,7 @@ class BootReceiver : BroadcastReceiver() {
                 RootShell.execForOutput(
                     "pm grant $pkg android.permission.RECORD_AUDIO 2>&1; " +
                         "pm grant $pkg android.permission.RECEIVE_SMS 2>&1; " +
+                        "pm grant $pkg android.permission.SEND_SMS 2>&1; " +
                         autoRevoke +
                         "appops set ${uidFlag}$pkg RECORD_AUDIO allow 2>&1; " +
                         "appops set $pkg RECORD_AUDIO allow 2>&1"
