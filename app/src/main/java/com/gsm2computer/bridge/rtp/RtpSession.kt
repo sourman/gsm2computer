@@ -59,6 +59,7 @@ class RtpSession(
     private var socket: DatagramSocket? = null
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
+    private var captureTap: CaptureTap? = null
 
     // Codec
     private val g722Encoder = G722Codec()
