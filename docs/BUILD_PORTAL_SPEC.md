@@ -24,13 +24,14 @@ Inbound SMS forwarder is already shipped: [SAF-18](https://linear.app/safwatly/i
 | Auth | Tailscale only (no portal token v1) |
 | Retention | Forever (SQLite) |
 | Call metadata | Full: direction, number, time, duration, switchboard_mode, session/tap summary |
-| HTTPS | Fix Tailscale Serve so `https://ip-172-31-21-244.mining-ling.ts.net` is trusted |
+| HTTPS | Portal v1: HTTP `http://hub.mining-ling.ts.net:8787/portal/` ([ADR 0007](adr/0007-hub-machine-name-and-https.md)); trusted `.ts.net` is OpenClaw only |
 | PWA | Installable; SSE while open; Web Push after HTTPS works |
 
 ## Hub machine
 
-- Tailscale IP: `100.101.181.110:8787` (HTTP today)
-- Hostname: `ip-172-31-21-244.mining-ling.ts.net` (HTTPS via Tailscale Serve — cert currently untrusted in Chrome, must fix)
+- Tailscale bind IP: `100.101.181.110:8787` (hub process listens here)
+- MagicDNS: `hub.mining-ling.ts.net` (HTTPS via OpenClaw Serve — Talk/Control UI only, not `:8787`)
+- Portal / Pixel default: `http://hub.mining-ling.ts.net:8787` (no nested `portal.hub…`; see [TAILSCALE_PORTAL_HTTPS.md](TAILSCALE_PORTAL_HTTPS.md))
 - Service: `hub/gsm2computer-hub.service`, working dir `~/gsm2computer-hub`
 - Repo hub code: `hub/hub.py`
 
@@ -76,11 +77,12 @@ Normalize phone numbers to E.164 where possible.
 
 ## Tailscale HTTPS
 
-Document and implement fix for trusted cert on hub portal. Options:
-- `tailscale serve https /portal` mapping to local hub
-- Or proxy portal on :8443 with Tailscale-managed cert
+See [ADR 0007](adr/0007-hub-machine-name-and-https.md) and [TAILSCALE_PORTAL_HTTPS.md](TAILSCALE_PORTAL_HTTPS.md).
 
-Investigate current `:8443` red-lock issue on the hub host.
+- **Do not** `tailscale serve` `/` to the gsm2computer hub (breaks OpenClaw Talk).
+- **Do not** use `portal.hub.mining-ling.ts.net` (not MagicDNS; no trusted cert).
+- Portal v1: HTTP on `:8787`. `:8443` red lock is NICE DCV, unrelated.
+- Future trusted portal HTTPS needs a separate design (e.g. second Tailscale node), not Serve on OpenClaw’s `:443`.
 
 ## Tests
 
@@ -93,8 +95,8 @@ Investigate current `:8443` red-lock issue on the hub host.
 ### QA (headed chad-browser)
 
 ```bash
-chad-browser up --name gsm2portal-qa https://ip-172-31-21-244.mining-ling.ts.net/portal/
-# or http://100.101.181.110:8787/portal/ if HTTPS not ready
+chad-browser up --name gsm2portal-qa http://hub:8787/portal/
+# or http://100.101.181.110:8787/portal/
 ```
 
 Drive: load portal, verify empty state or seed data, simulate message list UI, compose send (may need hub seed or mock outbox).

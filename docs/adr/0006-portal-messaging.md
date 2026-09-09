@@ -15,7 +15,7 @@ The Pixel 7 gateway forwards inbound SMS to the hub and keeps a local call log (
 3. **Auth v1**: Tailscale mesh only (no portal bearer token).
 4. **Retention**: forever.
 5. **Call log v1**: sync bridge `CallLogStore` entries; system Android `CallLog` backfill is a fast follow-up.
-6. **HTTPS**: fix Tailscale Serve / `.ts.net` cert so Chrome trusts the portal (enables Web Push later).
+6. **HTTPS**: portal v1 stays HTTP on `:8787` ([ADR 0007](0007-hub-machine-name-and-https.md)); trusted `.ts.net` HTTPS is for OpenClaw only. Web Push waits on a non-conflicting HTTPS path.
 7. **Outbound SMS**: 10s HTTP poll from `GatewayService`; no separate control WebSocket in v1.
 
 ## Call record fields

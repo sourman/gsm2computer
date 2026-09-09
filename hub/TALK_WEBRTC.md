@@ -23,7 +23,7 @@ or `AWS-Virtual-Microphone`. TTS would otherwise loop back into the mic.
 - Display: GNOME/DCV `DISPLAY=:1`
 - CDP: `http://127.0.0.1:9222`
 - Env: `PULSE_SOURCE=phone_uplink.monitor PULSE_SINK=openclaw_bus`
-- URL: `https://ip-172-31-21-244.mining-ling.ts.net/chat/main`
+- URL: `https://hub.mining-ling.ts.net/chat/main` ([ADR 0007](../docs/adr/0007-hub-machine-name-and-https.md))
 
 On GSM/simulator WebSocket connect the hub starts Talk; on disconnect it
 stops Talk. If Talk/WebRTC is not up, the hub **fails the call handshake**.

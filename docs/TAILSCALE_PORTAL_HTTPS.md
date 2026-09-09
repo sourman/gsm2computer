@@ -1,58 +1,69 @@
-# Tailscale HTTPS for the hub portal
+# Tailscale naming and HTTPS on the hub
 
-Chrome must trust `https://ip-172-31-21-244.mining-ling.ts.net` so the PWA can install (and later use Web Push). Auth v1 is Tailscale mesh only (ADR 0006).
+Auth v1 is Tailscale mesh only ([ADR 0006](../adr/0006-portal-messaging.md)). Machine naming and cert limits: [ADR 0007](../adr/0007-hub-machine-name-and-https.md).
 
-Hub HTTP origin stays `http://100.101.181.110:8787` for the Pixel gateway. Tailscale Serve is a TLS frontend on the MagicDNS name.
+## URLs (after machine rename to `hub`)
 
-## Why Chrome shows a red lock
+| Service | URL | Chrome-trusted HTTPS |
+|---------|-----|----------------------|
+| OpenClaw Control UI / Talk | `https://hub.mining-ling.ts.net/chat/main` | Yes (Tailscale Serve + HTTPS Certificates in admin) |
+| gsm2computer portal (PWA) | `http://hub.mining-ling.ts.net:8787/portal/` | No — HTTP on `:8787` |
+| Hub health / Pixel API | `http://hub.mining-ling.ts.net:8787` (hub binds `100.101.181.110:8787`) | No |
+| NICE DCV | `https://…:8443` | No — DCV cert, unrelated to Tailscale |
 
-Typical causes on this host:
+**Legacy hostname** (before rename): `ip-172-31-21-244.mining-ling.ts.net` → replace with `hub.mining-ling.ts.net` everywhere after `tailscale set --hostname=hub` (or admin rename).
 
-1. Something is listening on `:8443` with a **non-Tailscale** certificate (self-signed or hostname mismatch).
-2. `tailscale serve` / `tailscale funnel` is not actually bound to the hub, so the browser hits the wrong process.
-3. Tailscale HTTPS certificates are disabled in the admin console (MagicDNS HTTPS must be on).
+## What we cannot do
 
-`.ts.net` certs are issued by Let’s Encrypt via the Tailscale client. Chrome trusts those. It will **not** trust a random file on `:8443`.
+### `portal.hub.mining-ling.ts.net` (nested under hub)
 
-## Fix (run on the hub, as the user that owns `tailscale`)
+Tailscale MagicDNS only does `<machine>.<tailnet>.ts.net`. Labels like `portal.hub.mining-ling.ts.net` are **not** issued by MagicDNS ([FR #1543](https://github.com/tailscale/tailscale/issues/1543)). Tailscale/Let’s Encrypt will **not** mint a trusted cert for that name. Do not plan DNS or Chrome around it.
 
-```bash
-# 1. See what is claimed today
-tailscale serve status
-sudo ss -lptn | grep -E '8787|443|8443'
+### Tailscale Serve `/` → gsm2computer hub
 
-# 2. Drop a stale :8443 / path mapping if it is not the hub
-tailscale serve reset
+**Do not** `tailscale serve` the hub on `:443` or map `/` to `http://…:8787`. OpenClaw owns MagicDNS HTTPS (`gateway.tailscale.mode=serve`). Stealing Serve makes OpenClaw **refuse to start** (`status=78`) and GSM Talk dies (`Talk button disabled` / handshake fail).
 
-# 3. Proxy the MagicDNS HTTPS name to the hub
-# Hub listens on the Tailscale IP (100.101.181.110), not 127.0.0.1 — use that origin:
-tailscale serve --bg --https=443 http://100.101.181.110:8787
-# If the daemon cannot bind 443, use:
-# tailscale serve --bg http://100.101.181.110:8787
+`scripts/tailscale-serve-portal.sh` is **obsolete** — it runs `tailscale serve reset` and claims `/` for the hub. Do not run it on safwat-eu.
 
-# 4. Confirm
-tailscale serve status
-curl -fsS https://ip-172-31-21-244.mining-ling.ts.net/health
-curl -fsS -o /dev/null -w '%{http_code}\n' https://ip-172-31-21-244.mining-ling.ts.net/portal/
-```
+### Sibling `portal.mining-ling.ts.net`
 
-The portal is served by the hub at `/portal/` (static files from `hub/portal/dist`). Do not point Serve at a different port unless that port reverse-proxies the same hub.
+That name would be a **second Tailscale machine** (or tagged device identity), not a subdomain of `hub`. Out of scope unless we add a dedicated portal node.
 
-## Admin console
+## Why Chrome showed a red lock
 
-On https://login.tailscale.com/admin/dns :
+| Symptom | Cause |
+|---------|--------|
+| Red lock on **`:8443`** | **NICE DCV** (`dcvserver`), not Tailscale or the hub. Ignore for portal/Talk. |
+| Red lock on **`http://100.x:8787`** | Plain HTTP — no certificate on the hub listener. Expected for portal v1. |
+| Red lock on **`portal.hub…`** | Name not in MagicDNS; no valid Tailscale cert. |
+| Trusted Talk / Control UI | Visit **`https://hub.mining-ling.ts.net/…`** after rename, with HTTPS Certificates enabled in [Tailscale DNS admin](https://login.tailscale.com/admin/dns). |
 
-- MagicDNS enabled
-- HTTPS Certificates enabled
+A prior Serve experiment may have pointed the OpenClaw hostname at the hub briefly; trusted cert for Talk is always the OpenClaw Serve target on the machine FQDN, not `:8787`.
 
-Then `tailscale cert ip-172-31-21-244.mining-ling.ts.net` can mint/renew the cert (Serve does this itself when HTTPS is on).
-
-## Script
-
-`scripts/tailscale-serve-portal.sh` wraps the serve command. Copy it to the hub or run it over SSH:
+## If Talk is down after a Serve experiment
 
 ```bash
-ssh <hub-user>@100.101.181.110 'bash -s' < scripts/tailscale-serve-portal.sh
+ssh safwat-eu 'tailscale serve status; systemctl --user is-active openclaw-gateway.service'
+# If OpenClaw failed because Serve was stolen:
+ssh safwat-eu 'tailscale serve reset; systemctl --user start openclaw-gateway.service'
+# Reload Control UI in Talk Chromium; Talk button should show "Start voice input".
 ```
 
-Pixel outbound SMS / call upload keep using `http://100.101.181.110:8787`. Only browsers need the trusted `.ts.net` URL.
+Only reset Serve to **restore OpenClaw** — not to expose the gsm2computer portal on HTTPS.
+
+## Rename checklist (hub machine → `hub`)
+
+On the hub (as the user that owns Tailscale):
+
+```bash
+sudo tailscale set --hostname=hub
+tailscale status --json | jq -r '.Self.DNSName'   # expect hub.mining-ling.ts.net.
+```
+
+Then update bookmarks and docs: `ip-172-31-21-244` → `hub`. Talk Chromium profile URL: `https://hub.mining-ling.ts.net/chat/main`.
+
+Pixel outbound SMS / call upload: default `http://hub.mining-ling.ts.net:8787` (hub binds `100.101.181.110:8787`).
+
+## Portal HTTPS (future)
+
+Trusted PWA install and Web Push need HTTPS without stealing OpenClaw’s `:443`. Options not chosen in v1: separate Tailscale node for `portal.…`, or an OpenClaw-supported shared Serve layout. Until then, portal stays HTTP on `:8787`.

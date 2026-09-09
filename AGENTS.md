@@ -10,6 +10,8 @@ Architecture decisions live in **[docs/adr/](docs/adr/)**. Read those before cha
 | [docs/adr/0004-one-live-call.md](docs/adr/0004-one-live-call.md) | Second GSM/simulator inbound is reject/409; must not tear down the live call |
 | [docs/adr/0005-native-pcm-hub-wire.md](docs/adr/0005-native-pcm-hub-wire.md) | Phone PCM at HAL rate; hub 48 kHz. Missing fields = 8 kHz μ-law |
 | [docs/adr/0006-portal-messaging.md](docs/adr/0006-portal-messaging.md) | Hub PWA / SQLite SMS + call log; Pixel 10s outbox poll; Tailscale-only auth (SAF-29–34) |
+| [docs/adr/0007-hub-machine-name-and-https.md](docs/adr/0007-hub-machine-name-and-https.md) | Machine `hub`; no `portal.hub…`; do not Tailscale Serve `/` to gsm2computer |
+| [docs/TAILSCALE_PORTAL_HTTPS.md](docs/TAILSCALE_PORTAL_HTTPS.md) | MagicDNS URLs, Chrome cert red flags, rename checklist |
 | [hub/TALK_WEBRTC.md](hub/TALK_WEBRTC.md) | Commands, first DCV login, env knobs |
 
 ## Hard rules for this repo
