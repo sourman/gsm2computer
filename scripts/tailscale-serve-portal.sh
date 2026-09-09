@@ -1,36 +1,9 @@
 #!/usr/bin/env bash
-# Configure Tailscale Serve so https://<magicdns>/portal/ terminates with a
-# trusted .ts.net cert and proxies to the local gsm2computer hub.
+# OBSOLETE — do not run. OpenClaw owns Tailscale Serve on https://hub.mining-ling.ts.net/
+# (ADR 0007). Claiming :443 for the gsm2computer hub kills Control UI Talk.
+# Portal: http://hub.mining-ling.ts.net:8787/portal/
 set -euo pipefail
-
-# Hub binds GSM2COMPUTER_HUB_HOST (Tailscale IP), not 127.0.0.1 — Serve must target the same.
-HUB_HTTP="${GSM2COMPUTER_HUB_LOCAL:-http://100.101.181.110:8787}"
-MAGIC="${GSM2COMPUTER_HUB_MAGICDNS:-hub.mining-ling.ts.net}"
-
-if ! command -v tailscale >/dev/null 2>&1; then
-  echo "tailscale CLI not found on PATH" >&2
-  exit 1
-fi
-
-echo "current serve status:"
-tailscale serve status || true
-
-echo "resetting serve mappings (Tailscale HTTPS frontend only; hub on 8787 is untouched)"
-tailscale serve reset
-
-# Background HTTPS on 443 → local hub. Tailscale mints the .ts.net cert.
-if tailscale serve --bg --https=443 "$HUB_HTTP"; then
-  echo "serve: https://$MAGIC → $HUB_HTTP"
-else
-  echo "https=443 failed; trying default serve (still TLS on MagicDNS)" >&2
-  tailscale serve --bg "$HUB_HTTP"
-fi
-
-echo
-tailscale serve status || true
-echo
-echo "probe:"
-curl -fsS "https://$MAGIC/health" && echo
-code=$(curl -fsS -o /dev/null -w '%{http_code}' "https://$MAGIC/portal/" || true)
-echo "GET /portal/ → HTTP ${code:-err}"
-echo "If Chrome still shows a red lock, enable HTTPS Certificates in the Tailscale DNS admin console."
+echo "scripts/tailscale-serve-portal.sh is disabled (ADR 0007)." >&2
+echo "Do not tailscale serve reset or bind https://hub.mining-ling.ts.net to :8787." >&2
+echo "See docs/adr/0007-hub-machine-name-and-https.md and docs/TAILSCALE_PORTAL_HTTPS.md" >&2
+exit 1
