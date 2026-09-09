@@ -179,6 +179,18 @@ class PortalApp:
             )
             return "handled"
 
+        if route == "/" and method == "GET":
+            writer.write(
+                raw_response(
+                    302,
+                    b"",
+                    "text/plain",
+                    extra_headers={"Location": "/portal/"},
+                    extra_status="Found",
+                )
+            )
+            return "handled"
+
         if route.startswith("/portal/") and method == "GET":
             writer.write(self._static(route))
             return "handled"

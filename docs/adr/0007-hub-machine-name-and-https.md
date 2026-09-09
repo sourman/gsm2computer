@@ -19,7 +19,7 @@ OpenClaw already owns `https://…mining-ling.ts.net/` via `gateway.tailscale.mo
 3. **gsm2computer portal (v1):** HTTP on the hub listener — `http://hub.mining-ling.ts.net:8787/portal/` (MagicDNS; hub binds `100.101.181.110:8787`). No Chrome-trusted cert on `:8787`.
 4. **Do not** configure Tailscale Serve `/` (or any `:443` mapping) to the gsm2computer hub. Do not use `scripts/tailscale-serve-portal.sh` (it resets Serve and breaks OpenClaw).
 5. **Do not** target `portal.hub.mining-ling.ts.net` — not supported; Chrome will not trust a Tailscale cert there.
-6. A **sibling** hostname `portal.mining-ling.ts.net` would require a **second Tailscale identity** (separate node or tagged device), not a subdomain of `hub`.
+6. Sibling **`portal.mining-ling.ts.net`** is a **second Tailscale identity** (userspace `tailscaled`, not a VM). It must never call `tailscale serve` on the default/`hub` socket. OpenClaw keeps `https://hub.mining-ling.ts.net`.
 
 Pixel gateway and hub API clients default to `http://hub.mining-ling.ts.net:8787` (hub binds `100.101.181.110:8787`). Only human browsers care about trusted HTTPS for installable PWA / Web Push (deferred until a path that does not steal OpenClaw’s Serve exists).
 

@@ -7,7 +7,7 @@ Auth v1 is Tailscale mesh only ([ADR 0006](../adr/0006-portal-messaging.md)). Ma
 | Service | URL | Chrome-trusted HTTPS |
 |---------|-----|----------------------|
 | OpenClaw Control UI / Talk | `https://hub.mining-ling.ts.net/chat/main` | Yes (Tailscale Serve + HTTPS Certificates in admin) |
-| gsm2computer portal (PWA) | `http://hub.mining-ling.ts.net:8787/portal/` | No — HTTP on `:8787` |
+| gsm2computer portal (PWA) | `https://portal.mining-ling.ts.net/` (userspace sibling Serve) | Yes (Let’s Encrypt via Tailscale) |
 | Hub health / Pixel API | `http://hub.mining-ling.ts.net:8787` (hub binds `100.101.181.110:8787`) | No |
 | NICE DCV | `https://…:8443` | No — DCV cert, unrelated to Tailscale |
 
@@ -27,7 +27,10 @@ Tailscale MagicDNS only does `<machine>.<tailnet>.ts.net`. Labels like `portal.h
 
 ### Sibling `portal.mining-ling.ts.net`
 
-That name would be a **second Tailscale machine** (or tagged device identity), not a subdomain of `hub`. Out of scope unless we add a dedicated portal node.
+Userspace Tailscale identity on safwat-eu (`tailscale-portal.service`, CLI `~/bin/ts-portal` / `scripts/ts-portal.sh`). **Never** `tailscale serve` on the default hub socket.
+
+- PWA (trusted HTTPS): `https://portal.mining-ling.ts.net/` (redirects to `/portal/`)
+- OpenClaw Talk unchanged: `https://hub.mining-ling.ts.net/chat/main`
 
 ## Why Chrome showed a red lock
 

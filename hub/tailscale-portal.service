@@ -1,0 +1,19 @@
+[Unit]
+Description=Tailscale userspace sibling (MagicDNS portal.mining-ling.ts.net)
+Documentation=https://tailscale.com/docs/reference/tailscaled
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/mkdir -p %h/.local/share/tailscale-portal
+ExecStart=/usr/sbin/tailscaled \
+  --tun=userspace-networking \
+  --socket=%h/.local/share/tailscale-portal/tailscaled.sock \
+  --statedir=%h/.local/share/tailscale-portal \
+  --port=41642
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
