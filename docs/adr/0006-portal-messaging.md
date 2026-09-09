@@ -1,8 +1,8 @@
 # ADR 0006: Hub portal for SMS and call log
 
-## Status
-
-Accepted
+- **Status:** accepted
+- **Date:** 2026-09-09
+- **Tickets:** [SAF-29](https://linear.app/safwatly/issue/SAF-29/hub-sqlite-portal-restsse-api), [SAF-30](https://linear.app/safwatly/issue/SAF-30/pwa-messaging-portal-threads-compose-calls-tab), [SAF-31](https://linear.app/safwatly/issue/SAF-31/pixel-outbound-sms-call-log-sync-to-hub), [SAF-32](https://linear.app/safwatly/issue/SAF-32/tailscale-https-trusted-cert-for-hub-portal) (v1); [SAF-33](https://linear.app/safwatly/issue/SAF-33/system-calllog-backfill-portal-v11) (CallLog backfill); [SAF-34](https://linear.app/safwatly/issue/SAF-34/openclaw-mcp-calls-recent-sms-thread) (OpenClaw MCP)
 
 ## Context
 

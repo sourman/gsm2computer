@@ -2,6 +2,19 @@
 
 Handoff doc for build / review / smoke / QA agents.
 
+Linear (ADR 0006):
+
+| Ticket | What |
+|--------|------|
+| [SAF-29](https://linear.app/safwatly/issue/SAF-29/hub-sqlite-portal-restsse-api) | Hub SQLite + portal REST/SSE API |
+| [SAF-30](https://linear.app/safwatly/issue/SAF-30/pwa-messaging-portal-threads-compose-calls-tab) | PWA (threads, compose, calls tab) |
+| [SAF-31](https://linear.app/safwatly/issue/SAF-31/pixel-outbound-sms-call-log-sync-to-hub) | Pixel outbound SMS + call log sync |
+| [SAF-32](https://linear.app/safwatly/issue/SAF-32/tailscale-https-trusted-cert-for-hub-portal) | Tailscale HTTPS / trusted cert |
+| [SAF-33](https://linear.app/safwatly/issue/SAF-33/system-calllog-backfill-portal-v11) | System CallLog backfill (v1.1) |
+| [SAF-34](https://linear.app/safwatly/issue/SAF-34/openclaw-mcp-calls-recent-sms-thread) | OpenClaw MCP `calls_recent` / `sms_thread` (future) |
+
+Inbound SMS forwarder is already shipped: [SAF-18](https://linear.app/safwatly/issue/SAF-18/android-sms-forwarder-to-hub-control-api). Routing commands stay [SAF-12](https://linear.app/safwatly/issue/SAF-12/sms-routing-control-plane-deterministic).
+
 ## Locked decisions
 
 | Topic | Choice |
