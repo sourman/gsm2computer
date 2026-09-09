@@ -23,3 +23,15 @@ Architecture decisions live in **[docs/adr/](docs/adr/)**. Read those before cha
 - Do not commit gateway tokens, `#token=` URLs, or CDP ports bound to non-localhost.
 
 Android GSM silencing / priv-app notes: [docs/VOICE_CALL_SILENCING_INVESTIGATION.md](docs/VOICE_CALL_SILENCING_INVESTIGATION.md).
+
+## Linear tickets
+
+When speaking with the user about issue numbers (e.g. SAF-18, SAF-120), **always** add a short post-blurb of what the ticket is about. Ticket numbers are hard for humans to recall context from.
+
+Format: `SAF-NNN` — linked title — one-line what/why.
+
+Example:
+
+> [SAF-18 — Android SMS forwarder to hub control API](https://linear.app/safwatly/issue/SAF-18/android-sms-forwarder-to-hub-control-api) — gateway phone POSTs inbound SMS to the hub; routing logic stays server-side.
+
+Do not drop bare `SAF-NNN` references without that context blurb.
