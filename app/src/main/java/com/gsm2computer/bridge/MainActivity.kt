@@ -341,11 +341,9 @@ class MainActivity : AppCompatActivity(), GatewayHost {
     private fun relaunchGatewayForMicCapability() {
         val cfg = BridgeConfig.resolve(BridgeConfig.openPrefs(this))
         if (!cfg.autoconnect || !cfg.streamEnabled) return
-        if (running || isGatewayServiceRunning()) {
-            GatewayService.relaunchFromForeground(this)
-        } else {
-            GatewayService.start(this)
-        }
+        // Always force-restart from foreground. GatewayService.start() would defer
+        // orchestrator init when the M bit is missing, leaving FGS up but idle.
+        GatewayService.relaunchFromForeground(this)
     }
 
     private fun autoStartGateway() {
