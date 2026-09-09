@@ -95,8 +95,8 @@ See [ADR 0007](adr/0007-hub-machine-name-and-https.md) and [TAILSCALE_PORTAL_HTT
 ### QA (headed chad-browser)
 
 ```bash
-chad-browser up --name gsm2portal-qa http://hub:8787/portal/
-# or http://100.101.181.110:8787/portal/
+chad-browser up --name gsm2portal-qa http://hub.mining-ling.ts.net:8787/portal/
+# or https://hub.mining-ling.ts.net/portal/ once portal HTTPS exists (OpenClaw owns :443 today)
 ```
 
 Drive: load portal, verify empty state or seed data, simulate message list UI, compose send (may need hub seed or mock outbox).

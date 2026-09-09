@@ -43,7 +43,7 @@ class BuildConfigTest {
     fun defaultHubControlUrlPointsAtTailscaleHub() {
         assertTrue(
             "DEFAULT_HUB_CONTROL_URL must point at the Tailscale hub",
-            gradleScript.contains("http://100.101.181.110:8787"),
+            gradleScript.contains("http://hub.mining-ling.ts.net:8787"),
         )
     }
 }

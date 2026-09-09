@@ -6,7 +6,7 @@
 import WebSocket from "ws";
 
 const args = process.argv.slice(2).filter((a) => !a.startsWith("--"));
-const HUB = (args[0] || "http://100.101.181.110:8787").replace(/\/$/, "");
+const HUB = (args[0] || "http://hub.mining-ling.ts.net:8787").replace(/\/$/, "");
 const flag = (name, fallback) => {
   const idx = process.argv.indexOf(`--${name}`);
   if (idx >= 0 && process.argv[idx + 1]) return process.argv[idx + 1];

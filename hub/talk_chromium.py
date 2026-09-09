@@ -28,7 +28,7 @@ LOG = logging.getLogger("openclaw-talk-ui")
 
 CONTROL_UI_URL = os.environ.get(
     "GSM2COMPUTER_TALK_UI_URL",
-    "https://ip-172-31-21-244.mining-ling.ts.net/chat/main",
+    "https://hub.mining-ling.ts.net/chat/main",
 )
 CDP_PORT = int(os.environ.get("GSM2COMPUTER_TALK_CDP_PORT", "9222"))
 CDP_HOST = os.environ.get("GSM2COMPUTER_TALK_CDP_HOST", "127.0.0.1")

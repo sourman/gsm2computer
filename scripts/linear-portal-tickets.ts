@@ -117,7 +117,7 @@ This is **not** the switchboard operator console ([SAF-19](https://linear.app/sa
 - [ ] Thread list, conversation view, compose send → outbox
 - [ ] Calls tab shows direction, number, time, duration, switchboard_mode, session/tap when present
 - [ ] Live updates via SSE when the tab is open
-- [ ] Works on a mobile viewport (QA: chad-browser against Tailscale URL or \`http://100.101.181.110:8787/portal/\`)
+- [ ] Works on a mobile viewport (QA: chad-browser against Tailscale URL or \`http://hub.mining-ling.ts.net:8787/portal/\`)
 - [ ] No gateway tokens or \`#token=\` URLs in the frontend
 `,
   },
@@ -162,9 +162,9 @@ Also unblocks SMS **replies** for [SAF-12](https://linear.app/safwatly/issue/SAF
     relatedToKeys: ["pwa"],
     description: `## Goal
 
-Chrome trusts \`https://ip-172-31-21-244.mining-ling.ts.net\` for the hub portal (needed for installable PWA + Web Push later).
+Chrome trusts \`https://hub.mining-ling.ts.net\` for OpenClaw Talk (needed for installable PWA + Web Push on the portal later).
 
-ADR: \`${ADR}\` decision 6. Hub today: HTTP \`100.101.181.110:8787\`. Investigate the current \`:8443\` red-lock on the hub host.
+ADR: \`${ADR}\` decision 6. Hub today: HTTP \`http://hub.mining-ling.ts.net:8787\` (bind \`100.101.181.110:8787\`). Investigate the current \`:8443\` red-lock on the hub host.
 
 ## Options
 

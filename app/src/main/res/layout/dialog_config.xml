@@ -16,7 +16,7 @@
         android:id="@+id/etHubControlUrl"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:hint="http://100.101.181.110:8787"
+        android:hint="http://hub.mining-ling.ts.net:8787"
         android:inputType="textUri"
         android:importantForAutofill="no" />
 
@@ -32,7 +32,7 @@
         android:id="@+id/etStreamTokenUrl"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:hint="http://100.101.181.110:8787/token"
+        android:hint="http://hub.mining-ling.ts.net:8787/token"
         android:inputType="textUri"
         android:importantForAutofill="no" />
 

@@ -5,7 +5,7 @@
  */
 import WebSocket from "ws";
 
-const HUB = (process.argv[2] || "http://100.101.181.110:8787").replace(/\/$/, "");
+const HUB = (process.argv[2] || "http://hub.mining-ling.ts.net:8787").replace(/\/$/, "");
 const LOOPBACK = process.argv.includes("--loopback");
 const WS_URL =
   HUB.replace(/^https:/, "wss:").replace(/^http:/, "ws:") + (LOOPBACK ? "/loopback" : "");

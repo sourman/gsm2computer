@@ -7,7 +7,7 @@ import org.junit.Test
 
 class HubEndpointsTest {
 
-    private val hub = "http://100.101.181.110:8787"
+    private val hub = "http://hub.mining-ling.ts.net:8787"
 
     @Test
     fun tokenUrlUsesExplicitOverride() {
@@ -61,7 +61,7 @@ class HubEndpointsTest {
 
     @Test
     fun webSocketUrlRewritesHttpToWs() {
-        assertEquals("ws://100.101.181.110:8787", HubEndpoints.webSocketUrl(hub))
+        assertEquals("ws://hub.mining-ling.ts.net:8787", HubEndpoints.webSocketUrl(hub))
     }
 
     @Test
@@ -80,8 +80,8 @@ class HubEndpointsTest {
     @Test
     fun connectUrlOmitsModelOnCustomHub() {
         assertEquals(
-            "ws://100.101.181.110:8787",
-            HubEndpoints.connectUrl("ws://100.101.181.110:8787", "gpt-realtime", true),
+            "ws://hub.mining-ling.ts.net:8787",
+            HubEndpoints.connectUrl("ws://hub.mining-ling.ts.net:8787", "gpt-realtime", true),
         )
     }
 

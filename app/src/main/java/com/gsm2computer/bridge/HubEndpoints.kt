@@ -3,14 +3,14 @@ package com.gsm2computer.bridge
 /**
  * Hub control-plane URL helpers.
  *
- * [hubControlUrl] is the Tailscale (or LAN) origin, e.g. `http://100.101.181.110:8787`.
+ * [hubControlUrl] is the Tailscale (or LAN) origin, e.g. `http://hub.mining-ling.ts.net:8787`.
  * Token, health, SMS, and the μ-law WebSocket upgrade all live on that host.
  * When the hub URL is blank the phone falls back to OpenAI Realtime.
  */
 object HubEndpoints {
 
     const val OPENAI_REALTIME_WS = "wss://api.openai.com/v1/realtime"
-    const val DEFAULT_HUB_CONTROL_URL = "http://100.101.181.110:8787"
+    const val DEFAULT_HUB_CONTROL_URL = "http://hub.mining-ling.ts.net:8787"
 
     fun normalizeBase(url: String): String = url.trim().trimEnd('/')
 

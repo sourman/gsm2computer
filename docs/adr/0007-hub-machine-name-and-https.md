@@ -16,12 +16,12 @@ OpenClaw already owns `https://…mining-ling.ts.net/` via `gateway.tailscale.mo
 
 1. **Rename** the Tailscale machine to `hub` → canonical MagicDNS: `hub.mining-ling.ts.net`.
 2. **OpenClaw Control UI** (trusted HTTPS when [HTTPS Certificates](https://login.tailscale.com/admin/dns) are enabled): `https://hub.mining-ling.ts.net/chat/main`.
-3. **gsm2computer portal (v1):** HTTP on the hub listener — `http://hub:8787/portal/` (MagicDNS short name) or `http://100.101.181.110:8787/portal/` (Tailscale IP). No Chrome-trusted cert on `:8787`.
+3. **gsm2computer portal (v1):** HTTP on the hub listener — `http://hub.mining-ling.ts.net:8787/portal/` (MagicDNS; hub binds `100.101.181.110:8787`). No Chrome-trusted cert on `:8787`.
 4. **Do not** configure Tailscale Serve `/` (or any `:443` mapping) to the gsm2computer hub. Do not use `scripts/tailscale-serve-portal.sh` (it resets Serve and breaks OpenClaw).
 5. **Do not** target `portal.hub.mining-ling.ts.net` — not supported; Chrome will not trust a Tailscale cert there.
 6. A **sibling** hostname `portal.mining-ling.ts.net` would require a **second Tailscale identity** (separate node or tagged device), not a subdomain of `hub`.
 
-Pixel gateway and hub API clients keep `http://100.101.181.110:8787` (or `http://hub:8787` after rename). Only human browsers care about trusted HTTPS for installable PWA / Web Push (deferred until a path that does not steal OpenClaw’s Serve exists).
+Pixel gateway and hub API clients default to `http://hub.mining-ling.ts.net:8787` (hub binds `100.101.181.110:8787`). Only human browsers care about trusted HTTPS for installable PWA / Web Push (deferred until a path that does not steal OpenClaw’s Serve exists).
 
 ## Consequences
 

@@ -5,7 +5,7 @@ set -euo pipefail
 
 # Hub binds GSM2COMPUTER_HUB_HOST (Tailscale IP), not 127.0.0.1 — Serve must target the same.
 HUB_HTTP="${GSM2COMPUTER_HUB_LOCAL:-http://100.101.181.110:8787}"
-MAGIC="${GSM2COMPUTER_HUB_MAGICDNS:-ip-172-31-21-244.mining-ling.ts.net}"
+MAGIC="${GSM2COMPUTER_HUB_MAGICDNS:-hub.mining-ling.ts.net}"
 
 if ! command -v tailscale >/dev/null 2>&1; then
   echo "tailscale CLI not found on PATH" >&2

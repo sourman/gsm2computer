@@ -1,7 +1,7 @@
 import type { Connect } from "vite";
 import { defineConfig } from "vite";
 
-const DEFAULT_HUB = "http://100.101.181.110:8787";
+const DEFAULT_HUB = "http://hub.mining-ling.ts.net:8787";
 
 /** Proxy POST /proxy/token?hub=... → {hub}/token to avoid browser CORS in dev. */
 function hubTokenProxy(): { name: string; configureServer: (server: { middlewares: Connect.Server }) => void } {
