@@ -18,6 +18,9 @@ from pathlib import Path
 from typing import Any, Optional, Tuple
 
 from call_tap import CallTap
+from portal_http import EventBus, PortalApp
+from portal_sms import ingest_inbound_sms
+from portal_store import PortalStore
 from pipewire_target import (
     PipewireLinkError,
     pipewire_stream_env,
@@ -93,10 +96,12 @@ def json_response(status: int, body: dict, extra_headers: Optional[dict] = None)
     payload = json.dumps(body).encode("utf-8")
     status_text = {
         200: "OK",
+        201: "Created",
         400: "Bad Request",
         404: "Not Found",
         409: "Conflict",
         500: "Internal Server Error",
+        503: "Service Unavailable",
     }.get(status, "")
     lines = [
         f"HTTP/1.1 {status} {status_text}".rstrip(),
@@ -371,17 +376,26 @@ def _resample_pcm(pcm: bytes, src_rate: int, dst_rate: int, state: Any) -> Tuple
     return converted, new_state
 
 
-def parse_sms_command(body: str) -> Optional[str]:
-    text = (body or "").strip()
-    if not text:
-        return None
-    upper = text.upper()
-    if upper == "STATUS":
-        return "status"
-    match = re.match(r"^MODE\s+(\S+)", upper)
-    if match:
-        return match.group(1).lower()
-    return None
+PORTAL_DB = Path(os.environ.get("GSM2COMPUTER_PORTAL_DB", str(HUB_DIR / "portal.sqlite")))
+portal_store = PortalStore(PORTAL_DB)
+portal_events = EventBus()
+
+
+def _portal_mode() -> Optional[str]:
+    return current_mode
+
+
+def _portal_tap() -> Optional[dict[str, Any]]:
+    return last_call_tap
+
+
+portal_app = PortalApp(
+    store=portal_store,
+    events=portal_events,
+    dist_dir=HUB_DIR / "portal" / "dist",
+    mode_getter=_portal_mode,
+    tap_getter=_portal_tap,
+)
 
 
 class PipewireBridge:
@@ -944,6 +958,17 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         return
 
     try:
+        portal_result = await portal_app.dispatch(method, path, headers, body, writer)
+        if portal_result == "stream":
+            writer.close()
+            await writer.wait_closed()
+            return
+        if portal_result == "handled":
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+            return
+
         if method == "GET" and path == "/health":
             body: dict[str, Any] = {
                 "ok": True,
@@ -987,14 +1012,8 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 payload = json.loads(body.decode("utf-8") if body else "{}")
             except json.JSONDecodeError:
                 payload = {"raw": body.decode("utf-8", errors="replace")}
-            log_entry = {
-                "from": payload.get("from"),
-                "body": payload.get("body"),
-                "receivedAt": payload.get("receivedAt")
-                or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            }
+            log_entry, command = ingest_inbound_sms(portal_store, portal_events, payload)
             LOG.info("sms %s", json.dumps(log_entry, ensure_ascii=False))
-            command = parse_sms_command(str(payload.get("body") or ""))
             if command:
                 result = await set_switchboard_mode(command)
                 writer.write(json_response(200, {"ok": True, "sms": log_entry, "routing": result}))

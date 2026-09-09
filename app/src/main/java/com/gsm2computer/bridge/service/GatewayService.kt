@@ -21,6 +21,7 @@ import com.gsm2computer.bridge.R
 import com.gsm2computer.bridge.RootShell
 import com.gsm2computer.bridge.bridge.CallOrchestrator
 import com.gsm2computer.bridge.gsm.GsmCallManager
+import com.gsm2computer.bridge.sms.SmsOutboxPoller
 import kotlin.concurrent.thread
 
 /**
@@ -43,6 +44,7 @@ class GatewayService : Service() {
 
     @Volatile private var stopped = false
     private var notifStatusText = "Ready"
+    @Volatile private var outboxGeneration = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -127,6 +129,8 @@ class GatewayService : Service() {
 
         acquireLocks()
 
+        startOutboxPoller()
+
         thread(name = "bridge-init") {
             forceAllowRecordAudio()
             initOrchestrator(cfg)
@@ -160,17 +164,24 @@ class GatewayService : Service() {
                 if (state == CallOrchestrator.BridgeState.IDLE && currentCallStart != 0L) {
                     val dur = (System.currentTimeMillis() - currentCallStart) / 1000
                     if (currentCallIncoming) incomingDurationSec += dur else outgoingDurationSec += dur
+                    val number = currentCallNumber
+                    val incoming = currentCallIncoming
+                    val startedAt = currentCallStart
                     CallLogStore.addEntry(
                         this@GatewayService,
                         CallLogEntry(
-                            direction = if (currentCallIncoming) "IN" else "OUT",
-                            number = currentCallNumber,
-                            timestamp = currentCallStart,
+                            direction = if (incoming) "IN" else "OUT",
+                            number = number,
+                            timestamp = startedAt,
                             durationSec = dur
                         )
                     )
                     currentCallStart = 0L
                     currentCallNumber = ""
+                    thread(name = "Call-Upload") {
+                        Thread.sleep(1_000)
+                        CallLogUploader.post(this@GatewayService, incoming, number, startedAt, dur)
+                    }
                 }
 
                 val (notifState, statusText) = when (state) {
@@ -202,6 +213,24 @@ class GatewayService : Service() {
         broadcastStatus("IDLE", "Ready for calls")
     }
 
+    private fun startOutboxPoller() {
+        val gen = ++outboxGeneration
+        thread(name = "sms-outbox") {
+            while (!stopped && gen == outboxGeneration) {
+                try {
+                    SmsOutboxPoller.pollOnce(this@GatewayService)
+                } catch (e: Exception) {
+                    Log.w(TAG, "outbox poll: ${e.message}")
+                }
+                var waited = 0
+                while (!stopped && gen == outboxGeneration && waited < 10_000) {
+                    Thread.sleep(200)
+                    waited += 200
+                }
+            }
+        }
+    }
+
     private fun isCallActive(): Boolean {
         val state = orchestrator?.bridgeState ?: return false
         return state != CallOrchestrator.BridgeState.IDLE
@@ -210,6 +239,7 @@ class GatewayService : Service() {
     private fun stopGateway() {
         if (stopped) return
         stopped = true
+        outboxGeneration++
         onlineSince = 0L
         orchestrator?.stop()
         orchestrator = null

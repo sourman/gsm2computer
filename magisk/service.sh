@@ -55,6 +55,7 @@ for PERM in \
     android.permission.ACCESS_COARSE_LOCATION \
     android.permission.POST_NOTIFICATIONS \
     android.permission.RECEIVE_SMS \
+    android.permission.SEND_SMS \
 ; do
     pm grant "$PKG" "$PERM" 2>/dev/null && \
         log -t "$TAG" "Granted: $PERM" || \

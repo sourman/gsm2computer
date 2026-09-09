@@ -9,5 +9,6 @@ Read these before changing voice routing, PipeWire, or the OpenClaw Talk path.
 | [0003](0003-talk-chromium-lifecycle.md) | Dedicated Chromium + CDP; relaunch on demand; login lives in the profile |
 | [0004](0004-one-live-call.md) | One live GSM/hub call; waiting legs are rejected, not conferenced |
 | [0005](0005-native-pcm-hub-wire.md) | Phone sends native PCM; hub resamples to 48 kHz. Missing fields stay 8 kHz μ-law |
+| [0006](0006-portal-messaging.md) | Hub PWA + SQLite for SMS/call log; Pixel polls SMS outbox; Tailscale auth |
 
 Operational runbook (commands, first login): [`hub/TALK_WEBRTC.md`](../../hub/TALK_WEBRTC.md).

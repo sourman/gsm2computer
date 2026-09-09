@@ -23,6 +23,13 @@ __pycache__/
 hub-token-worker/node_modules/
 simulator/node_modules/
 simulator/dist/
+hub/portal/node_modules/
+hub/portal.sqlite
+hub/portal.sqlite-wal
+hub/portal.sqlite-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 
 # IDE / agent local
 .idea/

@@ -9,7 +9,7 @@ Architecture decisions live in **[docs/adr/](docs/adr/)**. Read those before cha
 | [docs/adr/0003-talk-chromium-lifecycle.md](docs/adr/0003-talk-chromium-lifecycle.md) | Talk Chromium restart, CDP, profile, DISPLAY |
 | [docs/adr/0004-one-live-call.md](docs/adr/0004-one-live-call.md) | Second GSM/simulator inbound is reject/409; must not tear down the live call |
 | [docs/adr/0005-native-pcm-hub-wire.md](docs/adr/0005-native-pcm-hub-wire.md) | Phone PCM at HAL rate; hub 48 kHz. Missing fields = 8 kHz μ-law |
-| [docs/adr/0006-portal-messaging.md](docs/adr/0006-portal-messaging.md) | Hub messaging PWA, SMS persist, call log, Tailscale HTTPS (SAF-29–34) |
+| [docs/adr/0006-portal-messaging.md](docs/adr/0006-portal-messaging.md) | Hub PWA / SQLite SMS + call log; Pixel 10s outbox poll; Tailscale-only auth (SAF-29–34) |
 | [hub/TALK_WEBRTC.md](hub/TALK_WEBRTC.md) | Commands, first DCV login, env knobs |
 
 ## Hard rules for this repo

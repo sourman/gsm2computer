@@ -31,6 +31,24 @@ object HubEndpoints {
         return if (hub.isEmpty()) "" else "$hub/sms"
     }
 
+    /** Outbound SMS poll: `{hub}/sms/outbox`. */
+    fun smsOutboxUrl(hubControlUrl: String): String {
+        val hub = normalizeBase(hubControlUrl)
+        return if (hub.isEmpty()) "" else "$hub/sms/outbox"
+    }
+
+    /** Send-complete ack: `{hub}/sms/outbox/{id}/ack`. */
+    fun smsOutboxAckUrl(hubControlUrl: String, id: String): String {
+        val hub = normalizeBase(hubControlUrl)
+        return if (hub.isEmpty() || id.isBlank()) "" else "$hub/sms/outbox/$id/ack"
+    }
+
+    /** Call log ingest: `{hub}/calls`. */
+    fun callsUrl(hubControlUrl: String): String {
+        val hub = normalizeBase(hubControlUrl)
+        return if (hub.isEmpty()) "" else "$hub/calls"
+    }
+
     /**
      * WebSocket origin. Custom hub → `http`/`https` rewritten to `ws`/`wss`.
      * OpenAI fallback when hub URL is blank.
@@ -63,6 +81,41 @@ object HubEndpoints {
             append("\"receivedAt\":").append(jsonString(receivedAt))
             append('}')
         }
+
+    fun callJson(
+        direction: String,
+        number: String,
+        startedAt: String,
+        durationSec: Long,
+        switchboardMode: String = "",
+        sessionId: String = "",
+        tapSummary: String = "",
+    ): String = buildString {
+        append('{')
+        append("\"direction\":").append(jsonString(direction)).append(',')
+        append("\"number\":").append(jsonString(number)).append(',')
+        append("\"started_at\":").append(jsonString(startedAt)).append(',')
+        append("\"duration_sec\":").append(durationSec)
+        if (switchboardMode.isNotEmpty()) {
+            append(',').append("\"switchboard_mode\":").append(jsonString(switchboardMode))
+        }
+        if (sessionId.isNotEmpty()) {
+            append(',').append("\"session_id\":").append(jsonString(sessionId))
+        }
+        if (tapSummary.isNotEmpty()) {
+            append(',').append("\"tap_summary\":").append(jsonString(tapSummary))
+        }
+        append('}')
+    }
+
+    fun outboxAckJson(status: String, error: String = ""): String = buildString {
+        append('{')
+        append("\"status\":").append(jsonString(status))
+        if (error.isNotEmpty()) {
+            append(',').append("\"error\":").append(jsonString(error))
+        }
+        append('}')
+    }
 
     internal fun jsonString(value: String): String = buildString {
         append('"')
