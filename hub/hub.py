@@ -69,6 +69,7 @@ ULAW_FORMATS = {"audio/pcmu", "audio/g711-ulaw", "pcmu", "g711_ulaw"}
 ULAW_BIAS = 0x84
 TTS_ENERGY_WATCHDOG_S = float(os.environ.get("GSM2COMPUTER_TTS_ENERGY_WATCHDOG", "2.5"))
 TTS_WATCHDOG_LOUD_FRAMES = int(os.environ.get("GSM2COMPUTER_TTS_WATCHDOG_LOUD_FRAMES", "8"))
+TALK_ROLLOVER_S = float(os.environ.get("GSM2COMPUTER_TALK_ROLLOVER_S", "1500"))
 
 LOG = logging.getLogger("gsm2computer-hub")
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -409,6 +410,7 @@ class PipewireBridge:
         self._record_task: Optional[asyncio.Task] = None
         self._helper_tasks: list[asyncio.Task] = []
         self._closed = False
+        self._abort = asyncio.Event()
         self.downlink_energy_ticks = 0
         self.playback_linked = False
         self.record_linked = False
@@ -446,7 +448,11 @@ class PipewireBridge:
         rc = await proc.wait()
         if self._closed:
             return
-        LOG.error("%s exited early rc=%s", label, rc)
+        LOG.error("%s exited early rc=%s; ending call", label, rc)
+        self._abort.set()
+
+    def aborted(self) -> bool:
+        return self._abort.is_set()
 
     async def start(
         self,
@@ -576,9 +582,11 @@ class PipewireBridge:
             try:
                 chunk = await self._record.stdout.readexactly(read_size)
             except asyncio.IncompleteReadError:
+                self._abort.set()
                 break
             except Exception as exc:
                 LOG.warning("record read failed: %s", exc)
+                self._abort.set()
                 break
             left = audioop.tomono(chunk, 2, 1, 0)
             right = audioop.tomono(chunk, 2, 0, 1)
@@ -644,12 +652,14 @@ class PipewireBridge:
             return
         if proc.returncode is not None:
             LOG.error("gsm playback write skipped: pw-cat already exited rc=%s", proc.returncode)
+            self._abort.set()
             return
         try:
             proc.stdin.write(bus_pcm)
             await proc.stdin.drain()
         except (BrokenPipeError, ConnectionResetError, OSError) as exc:
             LOG.error("gsm playback write failed: %s (pw-cat rc=%s)", exc, proc.returncode)
+            self._abort.set()
 
     def to_ulaw_8k(self, audio: bytes, fmt: str = "", rate: int = 0) -> bytes:
         """8 kHz μ-law for the legacy relay Talk path."""
@@ -693,6 +703,71 @@ class PipewireBridge:
                 await task
             except asyncio.CancelledError:
                 pass
+
+
+async def _watch_webrtc_ui_talk(openclaw: Any, bridge: "PipewireBridge") -> None:
+    """End the call if Control UI Talk dies while the gsm slot is still held."""
+    grace_s = 60.0
+    dead_threshold_s = 45.0
+    cdp_dead_threshold_s = 90.0
+    started = time.monotonic()
+    dead_since: Optional[float] = None
+    cdp_dead_since: Optional[float] = None
+    while not bridge._closed and not bridge.aborted():
+        await asyncio.sleep(15.0)
+        if time.monotonic() - started < grace_s:
+            continue
+        if not getattr(openclaw, "talk_active", False):
+            dead_since = None
+            cdp_dead_since = None
+            continue
+        healthy = await openclaw.talk_session_healthy()
+        if healthy is None:
+            if cdp_dead_since is None:
+                cdp_dead_since = time.monotonic()
+            elif time.monotonic() - cdp_dead_since >= cdp_dead_threshold_s:
+                LOG.error(
+                    "webrtc-ui CDP unavailable for %.0fs during call; ending call",
+                    cdp_dead_threshold_s,
+                )
+                bridge._abort.set()
+                return
+            continue
+        cdp_dead_since = None
+        if healthy:
+            dead_since = None
+            openclaw.webrtc_connected = True
+            continue
+        if dead_since is None:
+            dead_since = time.monotonic()
+        elif time.monotonic() - dead_since >= dead_threshold_s:
+            LOG.error(
+                "webrtc-ui talk unhealthy for %.0fs; ending call",
+                dead_threshold_s,
+            )
+            bridge._abort.set()
+            return
+
+
+async def _talk_rollover_watch(openclaw: Any, bridge: "PipewireBridge") -> None:
+    """Restart Control UI Talk before OpenAI/WebRTC session limits (~30 min)."""
+    while not openclaw._closed and getattr(openclaw, "talk_active", False):
+        started = getattr(openclaw, "talk_started_at", None)
+        if started is None:
+            await asyncio.sleep(1.0)
+            continue
+        remaining = TALK_ROLLOVER_S - (time.monotonic() - started)
+        if remaining > 0:
+            await asyncio.sleep(min(remaining, 30.0))
+            continue
+        if openclaw._closed or not getattr(openclaw, "talk_active", False):
+            return
+        try:
+            await openclaw.restart_talk()
+        except Exception as exc:
+            LOG.error("talk rollover failed: %s; ending call", exc)
+            bridge._abort.set()
+            return
 
 
 async def _watch_talk_frames_without_energy(
@@ -756,6 +831,7 @@ async def handle_websocket(
     playback_sink = GSM_SINK
     openclaw_bridge: Optional[Any] = None
     watchdog_task: Optional[asyncio.Task] = None
+    rollover_task: Optional[asyncio.Task] = None
     bridge: Optional[PipewireBridge] = None
     try:
         accept = ws_accept_key(key)
@@ -868,9 +944,30 @@ async def handle_websocket(
             watchdog_task = asyncio.create_task(
                 _watch_talk_frames_without_energy(openclaw_bridge, bridge)
             )
+        elif openclaw_bridge is not None and OPENCLAW_TALK_MODE == "webrtc-ui":
+            watchdog_task = asyncio.create_task(_watch_webrtc_ui_talk(openclaw_bridge, bridge))
+            rollover_task = asyncio.create_task(_talk_rollover_watch(openclaw_bridge, bridge))
 
         while True:
-            msg = await ws_read_frame(reader, writer)
+            if bridge.aborted():
+                LOG.error("pipewire bridge aborted; closing websocket call")
+                break
+            read_task = asyncio.create_task(ws_read_frame(reader, writer))
+            abort_task = asyncio.create_task(bridge._abort.wait())
+            done, pending = await asyncio.wait(
+                {read_task, abort_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            if abort_task in done:
+                LOG.error("pipewire helper died; closing websocket call")
+                break
+            msg = read_task.result()
             if msg is None:
                 break
             if not msg:
@@ -921,6 +1018,12 @@ async def handle_websocket(
             watchdog_task.cancel()
             try:
                 await watchdog_task
+            except asyncio.CancelledError:
+                pass
+        if rollover_task:
+            rollover_task.cancel()
+            try:
+                await rollover_task
             except asyncio.CancelledError:
                 pass
         if bridge is not None:

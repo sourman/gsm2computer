@@ -48,6 +48,7 @@ DISPLAY = os.environ.get("GSM2COMPUTER_TALK_DISPLAY", "")
 START_TIMEOUT_S = float(os.environ.get("GSM2COMPUTER_TALK_START_TIMEOUT", "45"))
 WEBRTC_TIMEOUT_S = float(os.environ.get("GSM2COMPUTER_TALK_WEBRTC_TIMEOUT", "25"))
 PAGE_TIMEOUT_S = float(os.environ.get("GSM2COMPUTER_TALK_PAGE_TIMEOUT", "30"))
+TALK_ROLLOVER_S = float(os.environ.get("GSM2COMPUTER_TALK_ROLLOVER_S", "1500"))
 
 HOOK_JS = r"""
 (() => {
@@ -395,6 +396,7 @@ class OpenClawTalkUI:
         self._closed = False
         self.talk_active = False
         self.webrtc_connected = False
+        self.talk_started_at: Optional[float] = None
         self.last_state: dict[str, Any] = {}
 
     @property
@@ -439,7 +441,7 @@ class OpenClawTalkUI:
         finally:
             await session.close()
 
-    async def start_talk(self) -> None:
+    async def start_talk(self, *, allow_already_active: bool = True) -> None:
         if self._closed:
             raise TalkUiError("talk ui is closed")
         session = await self._connect_page()
@@ -449,6 +451,8 @@ class OpenClawTalkUI:
             LOG.info("talk click: %s", clicked)
             if not isinstance(clicked, dict):
                 raise TalkUiError(f"talk click returned {clicked!r}")
+            if clicked.get("state") == "already_active" and not allow_already_active:
+                raise TalkUiError("Control UI Talk still active after stop")
             if clicked.get("state") == "missing":
                 raise TalkUiError(
                     "Control UI Talk button missing; cannot start WebRTC Talk"
@@ -473,19 +477,47 @@ class OpenClawTalkUI:
             self.last_state = state
             self.talk_active = True
             self.webrtc_connected = True
+            self.talk_started_at = time.monotonic()
             await self._bind_chromium_audio()
             LOG.info("control ui talk webrtc connected: %s", state.get("pcs"))
         finally:
             await session.close()
 
-    async def start(self) -> None:
-        await self.start_audio()
-        await self.start_talk()
+    async def talk_session_healthy(self) -> Optional[bool]:
+        """Return whether Talk UI is live and has a connected WebRTC peer (None if CDP unavailable)."""
+        if not cdp_available():
+            return None
+        try:
+            session = await self._connect_page()
+        except Exception:
+            return None
+        try:
+            state = await session.evaluate(PAGE_STATE_JS)
+            if not isinstance(state, dict):
+                return None
+            if not state.get("live"):
+                return False
+            pcs = state.get("pcs") or []
+            if not pcs:
+                return False
+            for pc in pcs:
+                if not isinstance(pc, dict):
+                    continue
+                conn = pc.get("connection")
+                ice = pc.get("ice")
+                if conn == "connected" and ice in ("connected", "completed"):
+                    return True
+            return False
+        except Exception:
+            return None
+        finally:
+            await session.close()
 
-    async def stop(self) -> None:
-        self._closed = True
+    async def stop_talk(self) -> None:
+        """Stop the live Talk session without tearing down Chromium."""
         self.talk_active = False
         self.webrtc_connected = False
+        self.talk_started_at = None
         if not cdp_available():
             return
         try:
@@ -500,6 +532,46 @@ class OpenClawTalkUI:
             LOG.warning("talk stop click failed: %s", exc)
         finally:
             await session.close()
+
+    async def restart_talk(self) -> None:
+        """Refresh Control UI Talk before provider session limits (~30 min)."""
+        if self._closed:
+            raise TalkUiError("talk ui is closed")
+        age_s = 0.0
+        if self.talk_started_at is not None:
+            age_s = time.monotonic() - self.talk_started_at
+        LOG.info("talk rollover after %.0fs (limit=%.0fs)", age_s, TALK_ROLLOVER_S)
+        await self.stop_talk()
+        deadline = time.monotonic() + 12.0
+        still_live = True
+        while time.monotonic() < deadline:
+            if not cdp_available():
+                await asyncio.sleep(0.35)
+                continue
+            try:
+                session = await self._connect_page()
+            except Exception:
+                await asyncio.sleep(0.3)
+                continue
+            try:
+                state = await session.evaluate(PAGE_STATE_JS)
+            finally:
+                await session.close()
+            if isinstance(state, dict) and not state.get("live"):
+                still_live = False
+                break
+            await asyncio.sleep(0.35)
+        if still_live:
+            raise TalkUiError("talk rollover stop failed: Control UI still live")
+        await self.start_talk(allow_already_active=False)
+
+    async def start(self) -> None:
+        await self.start_audio()
+        await self.start_talk()
+
+    async def stop(self) -> None:
+        self._closed = True
+        await self.stop_talk()
 
     async def health(self) -> dict[str, Any]:
         pid = browser_pid()
