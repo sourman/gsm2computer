@@ -1,0 +1,13 @@
+{
+  "ok": true,
+  "mode": "openclaw",
+  "openclaw_talk": "webrtc-ui",
+  "last_call_tap": {
+    "id": "tap-mock-1",
+    "dir": "in",
+    "meta": { "number": "+15550100" },
+    "streams": {
+      "gsm-uplink-8k-mono": { "seconds": 126.4 }
+    }
+  }
+}

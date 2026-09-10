@@ -10,7 +10,7 @@ npm install
 npm run dev
 ```
 
-Open **http://localhost:5173** in Chrome or Firefox.
+Open **http://localhost:5173** in Chrome or Firefox, or use the portal **Simulator** tab at **http://localhost:5174/#/simulator** (same `simulator/src` code).
 
 ## Usage
 

@@ -131,6 +131,9 @@
         <pre id="log"></pre>
       </section>
     </main>
-    <script type="module" src="/src/main.ts"></script>
+    <script type="module">
+      import { mountCallSimulator } from "/src/main.ts";
+      mountCallSimulator(document.querySelector("main"));
+    </script>
   </body>
 </html>

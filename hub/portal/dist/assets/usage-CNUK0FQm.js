@@ -1,0 +1,1 @@
+const t=!0,e="OpenClaw tokens",o=null,s=null,l="Usage is not on GET /health yet. This is a local placeholder.",n={mock:!0,label:e,used:null,limit:null,note:l};export{n as default,e as label,s as limit,t as mock,l as note,o as used};

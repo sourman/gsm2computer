@@ -1,5 +1,6 @@
-const CACHE = "gsm2portal-v1";
-const SHELL = ["/portal/", "/portal/index.html", "/portal/manifest.json", "/portal/icon-192.png"];
+const BASE = self.registration.scope;
+const CACHE = "gsm2portal-v2";
+const SHELL = [BASE, `${BASE}index.html`, `${BASE}manifest.json`, `${BASE}icon-192.png`];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -17,7 +18,7 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
-  if (url.pathname.startsWith("/portal/api/") || event.request.method !== "GET") {
+  if (url.pathname.includes("/portal/api/") || url.pathname === "/health" || event.request.method !== "GET") {
     return;
   }
   event.respondWith(
@@ -27,6 +28,6 @@ self.addEventListener("fetch", (event) => {
         caches.open(CACHE).then((cache) => cache.put(event.request, copy));
         return resp;
       })
-      .catch(() => caches.match(event.request).then((cached) => cached || caches.match("/portal/")))
+      .catch(() => caches.match(event.request).then((cached) => cached || caches.match(BASE)))
   );
 });
