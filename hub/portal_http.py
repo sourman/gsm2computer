@@ -211,12 +211,30 @@ async def _sse_events(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
         writer.write(b": connected\n\n")
         await writer.drain()
         while True:
-            try:
-                event = await asyncio.wait_for(queue.get(), timeout=15.0)
-            except asyncio.TimeoutError:
+            get_task = asyncio.create_task(queue.get())
+            read_task = asyncio.create_task(reader.read(1))
+            done, pending = await asyncio.wait(
+                {get_task, read_task},
+                timeout=15.0,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            if not done:
                 writer.write(b": ping\n\n")
                 await writer.drain()
                 continue
+            if read_task in done:
+                incoming = read_task.result()
+                if not incoming:
+                    break
+            if get_task not in done:
+                continue
+            event = get_task.result()
             name = str(event.get("type") or "message")
             payload = json.dumps(event)
             frame = f"event: {name}\ndata: {payload}\n\n".encode("utf-8")

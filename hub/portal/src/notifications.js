@@ -100,16 +100,19 @@ export function bindNotifyControls({ onPermission } = {}) {
       hint.textContent = "HTTP desk — in-app toasts only. OS alerts need HTTPS.";
       return;
     }
-    hint.hidden = permission !== "denied";
-    if (permission === "denied") {
-      hint.textContent = "Alerts blocked in this browser.";
-    }
     if (permission === "granted") {
       btn.hidden = true;
       hint.hidden = true;
       return;
     }
+    if (permission === "denied") {
+      btn.hidden = true;
+      hint.hidden = false;
+      hint.textContent = "Alerts blocked in this browser. In-app toasts still fire.";
+      return;
+    }
     btn.hidden = false;
+    hint.hidden = true;
     btn.textContent = "Enable desk alerts";
   };
   paint();
