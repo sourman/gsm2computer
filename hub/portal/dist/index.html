@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#1a1410" />
+    <meta name="description" content="gsm2computer switchboard — SMS and call desk" />
+    <title>Switchboard</title>
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icon-192.png" />
+    <script type="module" crossorigin src="/portal/assets/index-DnAWAFDS.js"></script>
+    <link rel="stylesheet" crossorigin href="/portal/assets/index-4-niC_8w.css">
+  </head>
+  <body>
+    <div id="app">
+      <header class="mast">
+        <div class="mast-brand">
+          <span class="lamp" aria-hidden="true"></span>
+          <div>
+            <p class="kicker">gsm2computer</p>
+            <h1>Switchboard</h1>
+          </div>
+        </div>
+        <nav class="desk-nav" aria-label="Desk">
+          <a id="nav-messaging" class="nav-btn is-active" href="#/messaging">
+            Messaging
+            <span id="unread-badge" class="badge" hidden>0</span>
+          </a>
+          <a id="nav-calls" class="nav-btn" href="#/calls">Calls</a>
+        </nav>
+        <div class="mast-alerts">
+          <button id="notify-btn" type="button" class="ghost" hidden>Enable desk alerts</button>
+          <p id="notify-hint" class="hint" hidden></p>
+        </div>
+      </header>
+
+      <main id="view-messaging" class="desk">
+        <aside id="thread-list" class="pane threads" aria-label="Threads"></aside>
+        <section id="thread-pane" class="pane conversation" aria-label="Conversation">
+          <header class="thread-head">
+            <button id="back-to-threads" type="button" class="ghost back" hidden>Threads</button>
+            <h2 id="thread-title">Select a thread</h2>
+          </header>
+          <div id="thread-scroller" class="thread-scroller">
+            <div id="message-list" class="message-list"></div>
+          </div>
+          <form id="compose-form" class="compose" hidden>
+            <label class="sr-only" for="compose-body">Message</label>
+            <textarea id="compose-body" rows="2" placeholder="Reply…" required></textarea>
+            <button type="submit">Send</button>
+          </form>
+        </section>
+      </main>
+
+      <main id="view-calls" class="desk calls-desk" hidden>
+        <section class="pane calls-pane" aria-label="Call history">
+          <div id="call-list" class="call-list"></div>
+        </section>
+      </main>
+    </div>
+    <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
+  </body>
+</html>

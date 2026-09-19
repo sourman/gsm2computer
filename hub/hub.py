@@ -16,8 +16,11 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, Tuple
+from urllib.parse import parse_qs, urlsplit
 
 from call_tap import CallTap
+from portal_http import dispatch_portal
+from portal_store import get_bus, get_store
 from pipewire_target import (
     PipewireLinkError,
     pipewire_stream_env,
@@ -89,7 +92,13 @@ except ImportError:
     get_talk_ui = None  # type: ignore[misc, assignment]
 
 
-def json_response(status: int, body: dict, extra_headers: Optional[dict] = None) -> bytes:
+def split_request_target(target: str) -> tuple[str, dict[str, str]]:
+    parts = urlsplit(target)
+    query = {k: v[-1] for k, v in parse_qs(parts.query, keep_blank_values=True).items()}
+    return parts.path or "/", query
+
+
+def json_response(status: int, body: Any, extra_headers: Optional[dict] = None) -> bytes:
     payload = json.dumps(body).encode("utf-8")
     status_text = {
         200: "OK",
@@ -928,17 +937,32 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     peer = writer.get_extra_info("peername")
     try:
-        method, path, headers, body = await read_http_request(reader)
+        method, target, headers, body = await read_http_request(reader)
     except (ConnectionError, ValueError, asyncio.IncompleteReadError) as exc:
         LOG.debug("bad request from %s: %s", peer, exc)
         writer.close()
         await writer.wait_closed()
         return
 
+    path, query = split_request_target(target)
     LOG.debug("%s %s from %s", method, path, peer)
 
     if headers.get("upgrade", "").lower() == "websocket" or "sec-websocket-key" in headers:
         await handle_websocket(reader, writer, headers, path)
+        writer.close()
+        await writer.wait_closed()
+        return
+
+    try:
+        if await dispatch_portal(method, path, query, headers, body, reader, writer):
+            return
+    except Exception:
+        LOG.exception("portal handler error for %s %s", method, path)
+        try:
+            writer.write(json_response(500, {"ok": False, "error": "internal error"}))
+            await writer.drain()
+        except Exception:
+            pass
         writer.close()
         await writer.wait_closed()
         return
@@ -994,6 +1018,16 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             }
             LOG.info("sms %s", json.dumps(log_entry, ensure_ascii=False))
+            try:
+                rec = get_store().persist_inbound(
+                    str(log_entry.get("from") or ""),
+                    str(payload.get("body") or ""),
+                    str(log_entry["receivedAt"]),
+                )
+                if rec:
+                    get_bus().publish(rec)
+            except Exception:
+                LOG.exception("portal persist inbound sms failed")
             command = parse_sms_command(str(payload.get("body") or ""))
             if command:
                 result = await set_switchboard_mode(command)
