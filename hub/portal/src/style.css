@@ -1,0 +1,367 @@
+:root {
+  color-scheme: dark;
+  --ink: #f4ead8;
+  --muted: #cbb79a;
+  --bg: #140f0c;
+  --panel: #1c1510;
+  --panel-2: #241b14;
+  --brass: #c4a574;
+  --lamp: #e8b84a;
+  --lamp-soft: rgba(232, 184, 74, 0.18);
+  --line: #3a2d22;
+  --in: #2a2118;
+  --out: #3d2a12;
+  font-family: "Iowan Old Style", Palatino, "Palatino Linotype", Georgia, serif;
+  line-height: 1.45;
+  background: radial-gradient(1200px 600px at 10% -10%, #3a2410 0%, var(--bg) 55%);
+  color: var(--ink);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  background: var(--bg);
+}
+
+#app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.mast {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 1.5rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.9rem 1.1rem;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, #22180f, #18110c);
+}
+
+.mast-brand {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.lamp {
+  width: 1.15rem;
+  height: 1.15rem;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #fff3c4, var(--lamp) 45%, #8a5a12);
+  box-shadow: 0 0 16px var(--lamp);
+}
+
+.kicker {
+  margin: 0;
+  font-size: 0.72rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--brass);
+}
+
+h1,
+h2 {
+  margin: 0;
+  font-weight: 600;
+}
+
+h1 {
+  font-size: 1.25rem;
+}
+
+.desk-nav {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.nav-btn {
+  position: relative;
+  color: var(--muted);
+  text-decoration: none;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+}
+
+.nav-btn.is-active {
+  color: var(--ink);
+  border-color: var(--brass);
+  background: var(--lamp-soft);
+}
+
+.badge {
+  display: inline-flex;
+  min-width: 1.2rem;
+  margin-left: 0.35rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background: var(--lamp);
+  color: #1a1208;
+  font-size: 0.72rem;
+  font-weight: 700;
+  justify-content: center;
+}
+
+.mast-alerts {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.2rem;
+}
+
+.hint {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+  max-width: 16rem;
+  text-align: right;
+}
+
+.ghost,
+.compose button,
+.thread-row {
+  font: inherit;
+  color: inherit;
+  background: var(--panel-2);
+  border: 1px solid var(--brass);
+  border-radius: 0.4rem;
+  cursor: pointer;
+}
+
+.ghost {
+  padding: 0.35rem 0.7rem;
+  color: var(--brass);
+  background: transparent;
+}
+
+.desk {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(14rem, 22rem) 1fr;
+  min-height: 0;
+}
+
+.desk.calls-desk {
+  grid-template-columns: 1fr;
+}
+
+.pane {
+  min-height: 0;
+  overflow: auto;
+}
+
+.threads {
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.thread-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.15rem 0.6rem;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  padding: 0.8rem 0.9rem;
+}
+
+.thread-row.is-active {
+  background: var(--lamp-soft);
+}
+
+.thread-row .peer {
+  font-weight: 600;
+}
+
+.thread-row .snippet {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 0.88rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.thread-row .when,
+.thread-row .dot {
+  font-size: 0.75rem;
+  color: var(--brass);
+}
+
+.thread-row .dot {
+  background: var(--lamp);
+  color: #1a1208;
+  border-radius: 999px;
+  padding: 0 0.35rem;
+}
+
+.conversation {
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-2);
+}
+
+.thread-head {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  padding: 0.7rem 0.9rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.thread-scroller {
+  flex: 1;
+  overflow: auto;
+  padding: 0.9rem;
+}
+
+.message-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.bubble {
+  max-width: min(36rem, 92%);
+  padding: 0.55rem 0.7rem;
+  border-radius: 0.7rem;
+  border: 1px solid var(--line);
+}
+
+.bubble p {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.bubble time {
+  display: block;
+  margin-top: 0.3rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.bubble.in {
+  background: var(--in);
+  align-self: flex-start;
+}
+
+.bubble.out {
+  background: var(--out);
+  align-self: flex-end;
+  border-color: var(--brass);
+}
+
+.compose {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.7rem;
+  border-top: 1px solid var(--line);
+}
+
+.compose textarea {
+  flex: 1;
+  resize: vertical;
+  min-height: 2.6rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 0.4rem;
+  border: 1px solid var(--line);
+  background: #120e0b;
+  color: inherit;
+  font: inherit;
+}
+
+.compose button {
+  background: var(--lamp);
+  color: #1a1208;
+  font-weight: 700;
+  padding: 0 1rem;
+}
+
+.empty {
+  margin: 1.2rem;
+  color: var(--muted);
+}
+
+.calls-pane {
+  padding: 0.5rem 0;
+}
+
+.call-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.8rem 1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.toast-stack {
+  position: fixed;
+  right: 0.8rem;
+  bottom: 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  z-index: 20;
+  max-width: min(22rem, calc(100vw - 1.6rem));
+}
+
+.toast {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  text-align: left;
+  padding: 0.7rem 0.8rem;
+  background: #2a1d10;
+  border: 1px solid var(--lamp);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  color: var(--ink);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+@media (max-width: 720px) {
+  .desk {
+    grid-template-columns: 1fr;
+  }
+
+  .desk.thread-open .threads {
+    display: none;
+  }
+
+  .desk:not(.thread-open) .conversation {
+    display: none;
+  }
+
+  .back {
+    display: inline-flex !important;
+  }
+
+  .mast-alerts {
+    align-items: flex-start;
+  }
+
+  .hint {
+    text-align: left;
+  }
+}
