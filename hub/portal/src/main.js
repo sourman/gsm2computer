@@ -4,6 +4,11 @@ import { renderCallSim, stopCallSim } from "./call-sim.js";
 import { renderDashboard } from "./dashboard.js";
 import { bumpUnread, paintUnreadBadge } from "./desk-state.js";
 import {
+  bindCallsApp,
+  handleCallsEvent,
+  renderCalls,
+} from "./calls.js";
+import {
   bindMessagingApp,
   getMessagingContext,
   handleMessagingEvent,
@@ -21,10 +26,7 @@ let routingUnsub = null;
 let deskEvents = null;
 
 function notifyRoute() {
-  const route = parseRoute();
-  const ctx = getMessagingContext();
-  if (route.page === "messaging" && ctx.tab === "messages") return "messaging";
-  return route.page;
+  return parseRoute().page;
 }
 
 async function onLiveEvent(type, data) {
@@ -41,7 +43,6 @@ async function onLiveEvent(type, data) {
     });
     const viewingThread =
       parseRoute().page === "messaging" &&
-      ctx.tab === "messages" &&
       ctx.peer === event.peer &&
       !document.hidden;
     if (notified && event.peer && !viewingThread) {
@@ -51,6 +52,8 @@ async function onLiveEvent(type, data) {
   }
   if (parseRoute().page === "messaging") {
     await handleMessagingEvent(app, type);
+  } else if (parseRoute().page === "calls") {
+    await handleCallsEvent(app, type);
   } else {
     paintUnreadBadge();
   }
@@ -87,6 +90,9 @@ async function render() {
     parseMessagingRest(route.rest);
     bindMessagingApp(app);
     await renderMessaging(app);
+  } else if (route.page === "calls") {
+    bindCallsApp(app);
+    await renderCalls(app);
   } else if (route.page === "routing") {
     await renderRouting();
   } else if (route.page === "simulator") {

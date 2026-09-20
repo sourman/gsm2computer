@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
-from call_tap import CallTap
+from call_tap import RECORD_DIR, CallTap
 from portal_http import EventBus, PortalApp
 from portal_sms import ingest_inbound_sms
 from portal_store import PortalStore
@@ -396,6 +396,7 @@ portal_app = PortalApp(
     dist_dir=HUB_DIR / "portal" / "dist",
     mode_getter=_portal_mode,
     tap_getter=_portal_tap,
+    record_dir=RECORD_DIR,
 )
 
 

@@ -25,19 +25,26 @@ export function normalizePath(path) {
   return p || "/";
 }
 
-export function parseRoute() {
-  const path = currentPath();
-  if (path === "/messaging" || path.startsWith("/messaging/")) {
-    const rest = path === "/messaging" ? "/" : path.slice("/messaging".length);
-    return { page: "messaging", path, rest: normalizePath(rest) };
+export function parseRouteFromPath(path) {
+  const p = normalizePath(path);
+  if (p === "/calls" || p.startsWith("/calls/")) {
+    return { page: "calls", path: p };
   }
-  if (path === "/routing" || path.startsWith("/routing/")) {
-    return { page: "routing", path };
+  if (p === "/messaging" || p.startsWith("/messaging/")) {
+    const rest = p === "/messaging" ? "/" : p.slice("/messaging".length);
+    return { page: "messaging", path: p, rest: normalizePath(rest) };
   }
-  if (path === "/simulator" || path.startsWith("/simulator/")) {
-    return { page: "simulator", path };
+  if (p === "/routing" || p.startsWith("/routing/")) {
+    return { page: "routing", path: p };
+  }
+  if (p === "/simulator" || p.startsWith("/simulator/")) {
+    return { page: "simulator", path: p };
   }
   return { page: "home", path: "/" };
+}
+
+export function parseRoute() {
+  return parseRouteFromPath(currentPath());
 }
 
 export function href(path) {
