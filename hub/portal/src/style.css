@@ -424,6 +424,57 @@ time,
   margin: 6px 0 4px;
 }
 
+.call-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.call-card:hover,
+.call-card:focus-visible {
+  border-color: var(--bay-brass);
+  box-shadow: inset 0 1px 0 #4a3824, 0 0 0 1px color-mix(in srgb, var(--bay-brass) 35%, transparent);
+  outline: none;
+}
+
+.call-card.playing {
+  border-color: var(--good);
+}
+
+.call-play {
+  margin-left: auto;
+  min-width: 1.4rem;
+  text-align: center;
+  color: var(--bay-brass);
+  font-size: 0.85rem;
+}
+
+.call-card.playing .call-play {
+  color: var(--good);
+}
+
+.call-play-empty {
+  padding: 8px 16px 16px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .preset-chip {
   font-size: 0.72rem;
   letter-spacing: 0.1em;

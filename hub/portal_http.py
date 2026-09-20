@@ -6,16 +6,19 @@ import asyncio
 import json
 import logging
 import mimetypes
+import os
 import re
 from pathlib import Path
 from typing import Any, Callable, Optional
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
-from portal_store import PortalStore, utc_now
+from portal_store import PortalStore, resolve_call_recording, utc_now
 
 LOG = logging.getLogger("gsm2computer-hub")
 
 OUTBOX_ACK_RE = re.compile(r"^/sms/outbox/([^/]+)/ack$")
+CALL_RECORDING_RE = re.compile(r"^/portal/api/calls/([^/]+)/recording$")
+RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 
 ModeGetter = Callable[[], Optional[str]]
 TapGetter = Callable[[], Optional[dict[str, Any]]]
@@ -76,8 +79,10 @@ def raw_response(
 ) -> bytes:
     status_text = extra_status or {
         200: "OK",
+        206: "Partial Content",
         302: "Found",
         404: "Not Found",
+        416: "Range Not Satisfiable",
         503: "Service Unavailable",
     }.get(status, "")
     lines = [
@@ -99,6 +104,42 @@ def _tap_summary_text(tap: Optional[dict[str, Any]]) -> Optional[str]:
     return json.dumps(tap, ensure_ascii=False)
 
 
+def _default_record_dir() -> Path:
+    return Path(
+        os.environ.get(
+            "GSM2COMPUTER_CALL_RECORD_DIR",
+            str(Path.home() / "gsm2computer-calls"),
+        )
+    )
+
+
+def _file_range_response(path: Path, range_header: str, content_type: str) -> bytes:
+    data = path.read_bytes()
+    size = len(data)
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "private, max-age=60",
+    }
+    match = RANGE_RE.match((range_header or "").strip())
+    if not match or (match.group(1) == "" and match.group(2) == ""):
+        return raw_response(200, data, content_type, extra_headers=headers)
+    start_s, end_s = match.group(1), match.group(2)
+    if start_s == "":
+        suffix = int(end_s)
+        start = max(0, size - suffix)
+        end = size - 1 if size else 0
+    else:
+        start = int(start_s)
+        end = int(end_s) if end_s else size - 1
+    if size == 0 or start >= size or start < 0:
+        headers["Content-Range"] = f"bytes */{size}"
+        return raw_response(416, b"", content_type, extra_headers=headers)
+    end = min(end, size - 1)
+    chunk = data[start : end + 1]
+    headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    return raw_response(206, chunk, content_type, extra_headers=headers)
+
+
 class PortalApp:
     def __init__(
         self,
@@ -107,12 +148,14 @@ class PortalApp:
         dist_dir: Path,
         mode_getter: Optional[ModeGetter] = None,
         tap_getter: Optional[TapGetter] = None,
+        record_dir: Optional[Path] = None,
     ) -> None:
         self.store = store
         self.events = events
         self.dist_dir = Path(dist_dir)
         self.mode_getter = mode_getter or (lambda: None)
         self.tap_getter = tap_getter or (lambda: None)
+        self.record_dir = Path(record_dir) if record_dir is not None else _default_record_dir()
 
     async def dispatch(
         self,
@@ -152,6 +195,11 @@ class PortalApp:
 
         if method == "GET" and route == "/portal/api/calls":
             writer.write(json_response(200, self.store.list_calls()))
+            return "handled"
+
+        recording = CALL_RECORDING_RE.match(route)
+        if recording and method == "GET":
+            writer.write(self._call_recording(unquote(recording.group(1)), headers))
             return "handled"
 
         if method == "GET" and route == "/sms/outbox":
@@ -278,6 +326,15 @@ class PortalApp:
         )
         self.events.publish("call", item)
         return json_response(201, {"ok": True, "call": item})
+
+    def _call_recording(self, call_id: str, headers: dict[str, str]) -> bytes:
+        call = self.store.get_call(call_id)
+        if call is None:
+            return json_response(404, {"ok": False, "error": "call not found"})
+        path = resolve_call_recording(call, self.record_dir)
+        if path is None or not path.is_file():
+            return json_response(404, {"ok": False, "error": "no recording"})
+        return _file_range_response(path, headers.get("range") or "", "audio/mpeg")
 
     def _static(self, route: str) -> bytes:
         dist = self.dist_dir.resolve()

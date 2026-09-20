@@ -48,6 +48,7 @@ export function shellHtml({ page, mock, extra = "" }) {
       <nav class="cockpit-nav" aria-label="Operator">
         ${item("home", "/", "Overview")}
         ${item("messaging", "/messaging", "Messaging")}
+        ${item("calls", "/calls", "Calls")}
         ${item("routing", "/routing", "Switchboard")}
         ${item("simulator", "/simulator", "Simulator")}
       </nav>

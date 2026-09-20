@@ -62,6 +62,10 @@ export async function getCalls() {
   return { data, mock };
 }
 
+export function callRecordingUrl(callId) {
+  return `${API}/calls/${encodeURIComponent(callId)}/recording`;
+}
+
 export async function sendMessage(to, body) {
   try {
     const resp = await fetch(`${API}/messages/send`, {
