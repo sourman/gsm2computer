@@ -1,33 +1,101 @@
 import "./style.css";
+import { connectEvents } from "./api.js";
 import { renderCallSim, stopCallSim } from "./call-sim.js";
 import { renderDashboard } from "./dashboard.js";
-import { parseMessagingRest, renderMessaging, startMessagingEvents } from "./messaging.js";
+import { bumpUnread, paintUnreadBadge } from "./desk-state.js";
+import {
+  bindMessagingApp,
+  getMessagingContext,
+  handleMessagingEvent,
+  openMessagingPeer,
+  parseMessagingRest,
+  renderMessaging,
+  resetMessagingSuppress,
+} from "./messaging.js";
+import { bindNotifyControls, notifySmsEvent } from "./notifications.js";
 import { href, onRouteChange, parseRoute } from "./router.js";
 
 const app = document.getElementById("app");
 const routingLoaders = import.meta.glob("./routing/index.{js,ts,tsx,jsx}");
 let routingUnsub = null;
+let deskEvents = null;
+
+function notifyRoute() {
+  const route = parseRoute();
+  const ctx = getMessagingContext();
+  if (route.page === "messaging" && ctx.tab === "messages") return "messaging";
+  return route.page;
+}
+
+async function onLiveEvent(type, data) {
+  const event = data && typeof data === "object" ? { ...data, type: data.type || type } : { type };
+  if (type === "message") {
+    const ctx = getMessagingContext();
+    const notified = await notifySmsEvent(event, {
+      selectedPeer: ctx.peer,
+      documentHidden: document.hidden,
+      route: notifyRoute(),
+      onOpen: (peer) => {
+        if (peer) openMessagingPeer(peer);
+      },
+    });
+    const viewingThread =
+      parseRoute().page === "messaging" &&
+      ctx.tab === "messages" &&
+      ctx.peer === event.peer &&
+      !document.hidden;
+    if (notified && event.peer && !viewingThread) {
+      bumpUnread(event.peer);
+      paintUnreadBadge();
+    }
+  }
+  if (parseRoute().page === "messaging") {
+    await handleMessagingEvent(app, type);
+  } else {
+    paintUnreadBadge();
+  }
+}
+
+function startDeskEvents() {
+  if (deskEvents) return;
+  deskEvents = connectEvents((type, payload) => {
+    onLiveEvent(type, payload).catch((err) => console.warn(err));
+  });
+}
+
+function registerServiceWorker() {
+  const swUrl = `${import.meta.env.BASE_URL}sw.js`.replace(/\/{2,}/g, "/");
+  if (!("serviceWorker" in navigator)) return;
+  navigator.serviceWorker.register(swUrl).catch((err) => console.warn("sw", err));
+  navigator.serviceWorker.addEventListener("message", (event) => {
+    if (event.data?.type === "open-peer" && event.data.peer) {
+      openMessagingPeer(event.data.peer);
+    } else if (event.data?.type === "open-peer") {
+      resetMessagingSuppress();
+      window.location.href = href("/messaging");
+    }
+  });
+}
 
 async function render() {
   routingUnsub?.();
   routingUnsub = null;
   const route = parseRoute();
+  if (route.page !== "messaging") resetMessagingSuppress();
   if (route.page !== "simulator" && route.page !== "routing") stopCallSim();
   if (route.page === "messaging") {
     parseMessagingRest(route.rest);
-    startMessagingEvents(app);
+    bindMessagingApp(app);
     await renderMessaging(app);
-    return;
-  }
-  if (route.page === "routing") {
+  } else if (route.page === "routing") {
     await renderRouting();
-    return;
-  }
-  if (route.page === "simulator") {
+  } else if (route.page === "simulator") {
     await renderCallSim(app);
-    return;
+  } else {
+    await renderDashboard(app);
   }
-  await renderDashboard(app);
+  bindNotifyControls();
+  paintUnreadBadge();
 }
 
 async function renderRouting() {
@@ -63,9 +131,6 @@ onRouteChange(() => {
   render();
 });
 
-const swUrl = `${import.meta.env.BASE_URL}sw.js`.replace(/\/{2,}/g, "/");
-if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register(swUrl).catch((err) => console.warn("sw", err));
-}
-
+registerServiceWorker();
+startDeskEvents();
 render();

@@ -1,4 +1,5 @@
-const BASE = (import.meta.env.BASE_URL || "/").replace(/\/?$/, "/");
+const env = import.meta.env || {};
+const BASE = (env.BASE_URL || "/").replace(/\/?$/, "/");
 
 export function usingHash() {
   return (location.hash || "").startsWith("#/");
@@ -44,6 +45,15 @@ export function href(path) {
   if (usingHash()) return `#${p}`;
   const tail = p === "/" ? "" : p.replace(/^\//, "");
   return `${BASE}${tail}`;
+}
+
+export function replaceLocation(path) {
+  const p = normalizePath(path);
+  if (usingHash()) {
+    history.replaceState(null, "", `${location.pathname}${location.search}#${p}`);
+    return;
+  }
+  history.replaceState({}, "", href(p));
 }
 
 export function navigate(path) {

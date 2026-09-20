@@ -1,6 +1,9 @@
-import { connectEvents, getCalls, getHealth, getMessages, getThreads, sendMessage } from "./api.js";
-import { href, navigate } from "./router.js";
+import { getCalls, getHealth, getMessages, getThreads, sendMessage } from "./api.js";
+import { clearUnread, deskState, paintUnreadBadge, unreadTotal } from "./desk-state.js";
+import { href, navigate, replaceLocation } from "./router.js";
 import { formatFixturePeer, shellHtml } from "./shell.js";
+
+export { unreadTotal };
 
 const state = {
   tab: "messages",
@@ -11,14 +14,33 @@ const state = {
   error: "",
   sending: false,
   mock: false,
+  suppressAutoOpen: false,
 };
 
-let events = null;
+let boundApp = null;
+
+export function pickLatestThreadPeer(threads) {
+  if (!Array.isArray(threads) || threads.length === 0) return null;
+  const sorted = [...threads].sort((a, b) => String(b.lastAt || "").localeCompare(String(a.lastAt || "")));
+  return sorted[0].peer;
+}
+
+export function scrollThreadToLatest(scroller) {
+  if (!scroller) return;
+  const run = () => {
+    scroller.scrollTop = scroller.scrollHeight;
+  };
+  run();
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(run);
+  }
+}
 
 export function parseMessagingRest(rest) {
   if (rest.startsWith("/thread/")) {
     state.tab = "messages";
     state.peer = decodeURIComponent(rest.slice("/thread/".length));
+    state.suppressAutoOpen = false;
     return;
   }
   if (rest === "/calls") {
@@ -28,6 +50,24 @@ export function parseMessagingRest(rest) {
   }
   state.tab = "messages";
   state.peer = null;
+}
+
+export function getMessagingContext() {
+  return { peer: state.peer, tab: state.tab };
+}
+
+export function resetMessagingSuppress() {
+  state.suppressAutoOpen = false;
+}
+
+export function openMessagingPeer(peer) {
+  if (!peer) return;
+  state.suppressAutoOpen = false;
+  state.tab = "messages";
+  state.peer = peer;
+  clearUnread(peer);
+  paintUnreadBadge();
+  navigate(`/messaging/thread/${encodeURIComponent(peer)}`);
 }
 
 function setMessagingPath() {
@@ -41,6 +81,7 @@ function setMessagingPath() {
 }
 
 export async function renderMessaging(app) {
+  boundApp = app;
   try {
     state.error = "";
     const healthRes = await getHealth();
@@ -51,8 +92,18 @@ export async function renderMessaging(app) {
       state.mock = state.mock || Boolean(res.mock);
     } else {
       state.threads = await getThreads();
+      if (!state.peer && !state.suppressAutoOpen) {
+        const latest = pickLatestThreadPeer(state.threads);
+        if (latest) {
+          state.peer = latest;
+          replaceLocation(`/messaging/thread/${encodeURIComponent(latest)}`);
+        }
+      }
       if (state.peer) {
+        clearUnread(state.peer);
         state.messages = await getMessages(state.peer);
+      } else {
+        state.messages = [];
       }
     }
   } catch (err) {
@@ -71,19 +122,29 @@ function paint(app) {
     ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ""}
     <main>${state.tab === "calls" ? renderCalls() : renderMessagesLayout()}</main>
   `;
+  paintUnreadBadge();
   app.querySelectorAll("[data-tab]").forEach((el) => {
     el.addEventListener("click", (ev) => {
       ev.preventDefault();
       state.tab = el.getAttribute("data-tab");
       state.peer = null;
+      state.suppressAutoOpen = state.tab !== "messages";
       setMessagingPath();
     });
   });
   app.querySelectorAll("[data-peer]").forEach((btn) => {
     btn.addEventListener("click", () => {
+      state.suppressAutoOpen = false;
       state.peer = btn.getAttribute("data-peer");
+      clearUnread(state.peer);
       setMessagingPath();
     });
+  });
+  app.querySelector("[data-threads-back]")?.addEventListener("click", (ev) => {
+    ev.preventDefault();
+    state.suppressAutoOpen = true;
+    state.peer = null;
+    setMessagingPath();
   });
   bindThread(app);
 }
@@ -103,10 +164,12 @@ function renderThreads() {
   return `<ul class="list">${state.threads
     .map((t) => {
       const on = t.peer === state.peer ? " on" : "";
+      const unread = deskState.unread[t.peer] || 0;
+      const mark = unread ? `<span class="thread-unread">${unread}</span>` : "";
       return `
       <li>
         <button class="row${on}" data-peer="${escapeAttr(t.peer)}">
-          <strong>${escapeHtml(formatFixturePeer(t.peer) || t.peer)}</strong>
+          <span class="row-head"><strong>${escapeHtml(formatFixturePeer(t.peer) || t.peer)}</strong>${mark}</span>
           <span>${escapeHtml(t.lastBody || "")}</span>
           <span class="meta">${escapeHtml(fmtTime(t.lastAt))}</span>
         </button>
@@ -157,7 +220,7 @@ function renderThreadInner() {
   return `
     <div class="thread">
       <div class="thread-head">
-        <a class="back" href="${href("/messaging")}">‹ Threads</a>
+        <a class="back" data-threads-back href="${href("/messaging")}">‹ Threads</a>
         <span class="thread-peer">${escapeHtml(peerLabel)}</span>
       </div>
       ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ""}
@@ -171,8 +234,7 @@ function renderThreadInner() {
 }
 
 function bindThread(app) {
-  const scroller = app.querySelector("#messages");
-  if (scroller) scroller.scrollTop = scroller.scrollHeight;
+  scrollThreadToLatest(app.querySelector("#messages"));
   const form = app.querySelector("#compose");
   if (!form) return;
   form.addEventListener("submit", async (ev) => {
@@ -195,12 +257,15 @@ function bindThread(app) {
   });
 }
 
-export function startMessagingEvents(app) {
-  if (events) return;
-  events = connectEvents((type) => {
-    if (type === "call" && state.tab === "calls") renderMessaging(app);
-    if (type === "message" || type === "outbox") renderMessaging(app);
-  });
+export async function handleMessagingEvent(app, type) {
+  const target = app || boundApp;
+  if (!target) return;
+  if (type === "call" && state.tab === "calls") await renderMessaging(target);
+  if (type === "message" || type === "outbox") await renderMessaging(target);
+}
+
+export function bindMessagingApp(app) {
+  boundApp = app;
 }
 
 function fmtTime(iso) {
