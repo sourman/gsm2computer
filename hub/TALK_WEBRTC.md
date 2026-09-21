@@ -53,6 +53,27 @@ when navigating. Do not put that token in git or systemd unit files.
 | `relay` | Legacy `OpenClawTalkBridge` / `talk.session.create` |
 | `off` / `0` | No OpenClaw; PipeWire gsm_bus only |
 
+### Stuck-call watchdog
+
+The GSM WebSocket claims the one-live-call slot (`live_call`, ADR 0004) before
+the 101 upgrade and releases it in that handler's `finally`. If the Pixel socket
+stays half-open, later dials get HTTP 409 until the hub process restarts.
+
+After `session.updated`, a watchdog aborts the live handler (close WS → existing
+cleanup of PipeWire helpers, Talk, taps → then release the lock). It does not
+clear the lock while orphans are still running.
+
+| Env | Default | 0 means |
+|---|---|---|
+| `GSM2COMPUTER_CALL_WATCHDOG` | `1` | `0`/`off` disables all checks |
+| `GSM2COMPUTER_CALL_WS_IDLE_S` | `60` | no inbound WS frames (incl. ping/pong) |
+| `GSM2COMPUTER_CALL_UPLINK_IDLE_S` | `120` | no `input_audio_buffer.append` |
+| `GSM2COMPUTER_CALL_UPLINK_GRACE_S` | `45` | wait this long after `session.updated` before requiring uplink |
+| `GSM2COMPUTER_CALL_MAX_S` | `2700` (45 min) | hard cap from slot claim; disable with `0` |
+| `GSM2COMPUTER_CALL_PING_S` | `20` | hub-initiated WS ping after the call is established |
+
+`GET /health` includes `call` (`busy`, `age_s`, `last_ws_s`, `last_uplink_s`).
+
 ## Commands
 
 ```bash

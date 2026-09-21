@@ -6,6 +6,16 @@ on:
   pull_request:
 
 jobs:
+  hub:
+    name: Hub unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Hub call-slot tests
+        run: python3 -m unittest discover -s hub -p 'test_*.py' -v
+
   build:
     name: Lint + Test + Release Build
     runs-on: ubuntu-24.04
