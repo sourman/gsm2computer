@@ -355,8 +355,25 @@ class CallTap:
         }
 
     async def close(self) -> dict[str, Any]:
-        if self._closed:
+        if self._closed and not self._procs and not self._tasks:
             return self.summary()
+        await self.stop_capture()
+        mixes: dict[str, Any] = {}
+        try:
+            mixes = await self._mix_rooms()
+        except Exception as exc:
+            LOG.error("call tap mix failed: %s; leaving WAV stems", exc)
+        summary = self.summary()
+        summary["meta"] = self.meta
+        summary["mixes"] = mixes
+        (self.dir / "levels.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+        LOG.info("call tap closed %s mixes=%s", json.dumps(summary["streams"]), json.dumps(mixes))
+        return summary
+
+    async def stop_capture(self) -> None:
+        """Stop pw-record helpers and close WAV stems. Does not mix."""
+        if self._closed and not self._procs and not self._tasks:
+            return
         self._closed = True
         for proc in self._procs:
             if proc.returncode is None:
@@ -384,18 +401,10 @@ class CallTap:
         self._tasks = []
         self._procs = []
         for stream in self._streams.values():
-            stream.close()
-        mixes: dict[str, Any] = {}
-        try:
-            mixes = await self._mix_rooms()
-        except Exception as exc:
-            LOG.error("call tap mix failed: %s; leaving WAV stems", exc)
-        summary = self.summary()
-        summary["meta"] = self.meta
-        summary["mixes"] = mixes
-        (self.dir / "levels.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-        LOG.info("call tap closed %s mixes=%s", json.dumps(summary["streams"]), json.dumps(mixes))
-        return summary
+            try:
+                stream.close()
+            except Exception:
+                pass
 
     async def _mix_rooms(self) -> dict[str, Any]:
         mixes: dict[str, Any] = {}
