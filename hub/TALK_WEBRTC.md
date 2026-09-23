@@ -74,6 +74,26 @@ clear the lock while orphans are still running.
 
 `GET /health` includes `call` (`busy`, `age_s`, `last_ws_s`, `last_uplink_s`).
 
+### Outbound alert webhook (optional)
+
+Stuck-call watchdog aborts POST a Grok Bot webhook when both env vars are set.
+Unset `GSM2COMPUTER_ALERT_WEBHOOK_URL` is a silent skip. This is **not** the
+Pixel SMS outbox (`/sms/outbox`).
+
+| Env | Default | Notes |
+|---|---|---|
+| `GSM2COMPUTER_ALERT_WEBHOOK_URL` | unset | Public HTTPS webhook URL. Empty = no-op |
+| `GSM2COMPUTER_ALERT_WEBHOOK_KEY` | unset | Sender key; sent as `Authorization: Bearer <key>` |
+
+Cup (file-copy deploy) — systemd user drop-in, then reload:
+
+```
+~/.config/systemd/user/gsm2computer-hub.service.d/alert-webhook.conf
+```
+
+Example: [docs/alert-webhook.conf.example](../docs/alert-webhook.conf.example).
+`systemctl --user daemon-reload && systemctl --user restart gsm2computer-hub`
+
 ## Commands
 
 ```bash
