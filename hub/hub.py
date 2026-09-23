@@ -744,8 +744,11 @@ async def _watch_live_call(
     ping_every = slot.config.ping_s
     last_ping = time.monotonic()
     while slot.busy:
-        if bridge is not None and bridge._closed:
-            return
+        # Never return without aborting: a closed PipeWire bridge + half-dead GSM
+        # WebSocket previously left CallSlot.busy stuck for hours (wait_or_abort
+        # never woke, finally never released).
+        if bridge is not None and bridge._closed and not slot.abort.is_set():
+            slot.abort_call("pipewire bridge closed while call slot still held")
         if not slot.abort.is_set():
             await asyncio.sleep(1.0)
         now = time.monotonic()
@@ -1243,11 +1246,39 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 payload = {"raw": body.decode("utf-8", errors="replace")}
             log_entry, command = ingest_inbound_sms(portal_store, portal_events, payload)
             LOG.info("sms %s", json.dumps(log_entry, ensure_ascii=False))
+            try:
+                from portal_sms import should_wake_cup, format_ops_sms_alert
+                if should_wake_cup(
+                    str(log_entry.get("from") or ""),
+                    str(log_entry.get("body") or ""),
+                ):
+                    post_system_alert(
+                        format_ops_sms_alert(
+                            str(log_entry.get("from") or ""),
+                            str(log_entry.get("body") or ""),
+                            str(log_entry.get("receivedAt") or ""),
+                        )
+                    )
+            except Exception:
+                LOG.warning("ops SMS alert webhook failed", exc_info=True)
             if command:
                 result = await set_switchboard_mode(command)
                 writer.write(json_response(200, {"ok": True, "sms": log_entry, "routing": result}))
             else:
                 writer.write(json_response(200, {"ok": True, "sms": log_entry}))
+        elif method == "POST" and path == "/admin/call/release":
+            # Emergency CallSlot force-release. Prefer abort so WS finally cleans
+            # PipeWire/Talk; if no bridge is attached, release the lock directly.
+            snap = live_call.snapshot()
+            if live_call.busy:
+                live_call.abort_call("admin force-release")
+                if active_bridge is None:
+                    live_call.release()
+                post_system_alert(
+                    f"admin force-release CallSlot (was busy={snap.get('busy')} age_s={snap.get('age_s')})"
+                )
+                LOG.error("admin force-release CallSlot %s -> %s", snap, live_call.snapshot())
+            writer.write(json_response(200, {"ok": True, "call": live_call.snapshot(), "before": snap}))
         else:
             writer.write(json_response(404, {"ok": False, "error": "not found"}))
     except Exception:
@@ -1257,6 +1288,31 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
     await writer.drain()
     writer.close()
     await writer.wait_closed()
+
+
+
+async def _reap_stuck_call_slot() -> None:
+    """Last-resort: force-release CallSlot if max duration exceeded and handler wedged."""
+    while True:
+        await asyncio.sleep(30.0)
+        try:
+            if not live_call.busy:
+                continue
+            now = time.monotonic()
+            reason = live_call.check(now)
+            if not reason:
+                continue
+            snap = live_call.snapshot(now)
+            LOG.error("call slot reaper force-release: %s %s", reason, snap)
+            live_call.abort_call(reason)
+            # If the WS handler is wedged, abort alone may not run finally — release.
+            await asyncio.sleep(5.0)
+            if live_call.busy:
+                live_call.release()
+                post_system_alert(f"call slot reaper force-release: {reason}")
+                LOG.error("call slot reaper released lock after abort wait %s", live_call.snapshot())
+        except Exception:
+            LOG.exception("call slot reaper error")
 
 
 async def main() -> None:
@@ -1269,6 +1325,7 @@ async def main() -> None:
         loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown()))
 
     server = await asyncio.start_server(handle_client, HOST, PORT)
+    asyncio.create_task(_reap_stuck_call_slot())
     addrs = ", ".join(str(sock.getsockname()) for sock in server.sockets or [])
     LOG.info(
         "listening on %s (sink=%s auto_mode=%s openclaw_talk=%s "
