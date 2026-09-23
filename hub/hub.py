@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
+from alert_webhook import post_system_alert
 from call_slot import CallSlot, CallWatchdogConfig, wait_or_abort
 from call_tap import RECORD_DIR, CallTap
 from portal_http import EventBus, PortalApp
@@ -772,6 +773,7 @@ async def _watch_live_call(
             reason,
             slot.snapshot(now),
         )
+        post_system_alert(f"call watchdog abort: {reason}")
         try:
             await ws_send_close(writer, 1011, reason)
         except (ConnectionError, BrokenPipeError, OSError) as exc:
