@@ -121,8 +121,17 @@ def _http_json(method: str, url: str, body: Optional[bytes] = None, timeout: flo
     return json.loads(raw.decode("utf-8"))
 
 
-def health() -> dict[str, Any]:
-    return _http_json("GET", f"{HUB_HTTP}/health")
+def health(*, retries: int = 8, delay_s: float = 0.5) -> dict[str, Any]:
+    last: Exception | None = None
+    for i in range(max(1, retries)):
+        try:
+            return _http_json("GET", f"{HUB_HTTP}/health")
+        except Exception as exc:  # noqa: BLE001 — transient during hub restart
+            last = exc
+            if i + 1 < retries:
+                time.sleep(delay_s)
+    assert last is not None
+    raise last
 
 
 def line_idle(h: Optional[dict[str, Any]] = None) -> bool:
