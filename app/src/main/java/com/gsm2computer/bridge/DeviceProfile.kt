@@ -555,7 +555,8 @@ data class DeviceProfile(
             ),
             audio = AudioCalibration(
                 musicVolPercent = 100,
-                captureGain = 12,
+                // Was 12; clipped post-gate (pre_peak~0.11). After cup NS/EC off (PR #11), 8x ~0.88 peak.
+                captureGain = 8,
                 playbackGain = 2,
                 voiceCallVolPercent = 70,
                 noiseGateThreshold = 3,   // UL capture on aoc-snd-card is quiet; 3 passes speech, gates noise
