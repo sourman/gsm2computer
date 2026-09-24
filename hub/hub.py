@@ -85,6 +85,7 @@ LOG = logging.getLogger("gsm2computer-hub")
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 current_mode: Optional[str] = None
+WS_SEND_TIMEOUT_S = float(os.environ.get("GSM2COMPUTER_WS_SEND_TIMEOUT_S", "5"))
 active_bridge: Optional["PipewireBridge"] = None
 active_ws_writer: Optional[asyncio.StreamWriter] = None
 active_openclaw: Optional[Any] = None
@@ -178,14 +179,14 @@ async def ws_send_text(writer: asyncio.StreamWriter, text: str) -> None:
     else:
         header = bytes([0x81, 127]) + length.to_bytes(8, "big")
     writer.write(header + data)
-    await writer.drain()
+    await asyncio.wait_for(writer.drain(), timeout=WS_SEND_TIMEOUT_S)
 
 
 async def ws_send_pong(writer: asyncio.StreamWriter, payload: bytes = b"") -> None:
     length = len(payload)
     header = bytes([0x8A, length])
     writer.write(header + payload)
-    await writer.drain()
+    await asyncio.wait_for(writer.drain(), timeout=WS_SEND_TIMEOUT_S)
 
 
 async def ws_send_ping(writer: asyncio.StreamWriter, payload: bytes = b"hub") -> None:
@@ -194,7 +195,7 @@ async def ws_send_ping(writer: asyncio.StreamWriter, payload: bytes = b"hub") ->
         raise ValueError("ping payload too long")
     header = bytes([0x89, length])
     writer.write(header + payload)
-    await writer.drain()
+    await asyncio.wait_for(writer.drain(), timeout=WS_SEND_TIMEOUT_S)
 
 
 async def ws_read_frame(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> Optional[str]:
@@ -230,7 +231,7 @@ async def ws_read_frame(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 async def ws_send_close(writer: asyncio.StreamWriter, code: int, reason: str) -> None:
     payload = code.to_bytes(2, "big") + reason.encode("utf-8")[:120]
     writer.write(bytes([0x88, len(payload)]) + payload)
-    await writer.drain()
+    await asyncio.wait_for(writer.drain(), timeout=WS_SEND_TIMEOUT_S)
 
 
 async def fail_call_handshake(writer: asyncio.StreamWriter, message: str) -> None:
@@ -661,6 +662,18 @@ class PipewireBridge:
             }
             try:
                 await ws_send_text(ws_writer, json.dumps(event))
+            except asyncio.TimeoutError:
+                # Pixel not reading / Tailscale half-open: drain stalls, which
+                # also blocks ping/pong on the same StreamWriter and freezes
+                # last_ws → false "websocket idle" while the phone call lives.
+                LOG.error(
+                    "websocket downlink send stalled (>%ss); aborting call",
+                    WS_SEND_TIMEOUT_S,
+                )
+                self._signal_abort(
+                    f"websocket downlink send stalled (>{WS_SEND_TIMEOUT_S:.0f}s)"
+                )
+                break
             except (ConnectionError, BrokenPipeError, asyncio.IncompleteReadError):
                 break
         if self._record.returncode is None:
@@ -1432,6 +1445,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 
 async def _reap_stuck_call_slot() -> None:
     """Last-resort: force-release CallSlot if max duration exceeded and handler wedged."""
+    global active_openclaw
     while True:
         await asyncio.sleep(30.0)
         try:
@@ -1444,20 +1458,30 @@ async def _reap_stuck_call_slot() -> None:
             snap = live_call.snapshot(now)
             LOG.error("call slot reaper force-release: %s %s", reason, snap)
             bridge_ref = active_bridge
+            openclaw_ref = active_openclaw
             forced = await ensure_released_after_abort(live_call, reason, wait_s=5.0)
             # Reaper previously freed CallSlot but left active_bridge set → ghost
             # "call already in progress" with /health busy=false. Always clear.
             cleared = await _clear_stale_active_bridge(bridge_ref)
-            if forced or cleared:
+            talk_stopped = False
+            if openclaw_ref is not None and active_openclaw is openclaw_ref:
+                active_openclaw = None
+                try:
+                    await asyncio.wait_for(openclaw_ref.stop(), timeout=8.0)
+                    talk_stopped = True
+                except Exception:
+                    LOG.warning("reaper openclaw stop failed", exc_info=True)
+            if forced or cleared or talk_stopped:
                 post_system_alert(
                     f"call slot reaper force-release: {reason} "
-                    f"(forced={forced} bridge_cleared={cleared})"
+                    f"(forced={forced} bridge_cleared={cleared} talk_stopped={talk_stopped})"
                 )
                 LOG.error(
                     "call slot reaper released lock after abort wait "
-                    "forced=%s bridge_cleared=%s %s",
+                    "forced=%s bridge_cleared=%s talk_stopped=%s %s",
                     forced,
                     cleared,
+                    talk_stopped,
                     live_call.snapshot(),
                 )
         except Exception:
