@@ -64,22 +64,52 @@ HOOK_JS = r"""
   Wrapped.prototype = Orig.prototype;
   Object.setPrototypeOf(Wrapped, Orig);
   window.RTCPeerConnection = Wrapped;
-  // Chromium/WebRTC AGC was observed lowering Pulse phone_uplink.monitor
-  // (monitor.channel-volumes=true). Disable auto gain on capture constraints.
+  // Virtual null-sink mic (phone_uplink.monitor): WebRTC APM must stay OFF.
+  // AGC drifts Pulse monitor volumes; NS/EC on telephony audio creates the
+  // "stuck in a bottle" / underwater sound and attenuates speech (~8 dB seen
+  // on openclaw-mic vs gsm-uplink taps). Mix-minus is PipeWire topology, not AEC.
   try {
     const md = navigator.mediaDevices;
+    const apmOff = {
+      autoGainControl: false,
+      echoCancellation: false,
+      noiseSuppression: false,
+      googAutoGainControl: false,
+      googEchoCancellation: false,
+      googNoiseSuppression: false,
+      googHighpassFilter: false,
+      googTypingNoiseDetection: false,
+      googAudioMirroring: false,
+    };
+    const forceAudio = (audio) => {
+      if (audio === undefined || audio === true) return {...apmOff};
+      if (audio && typeof audio === "object") return {...audio, ...apmOff};
+      return audio;
+    };
     if (md && typeof md.getUserMedia === "function" && !window.__gsm2GumPatched) {
       const origGum = md.getUserMedia.bind(md);
       md.getUserMedia = (constraints) => {
         const c = constraints ? {...constraints} : {};
-        if (c.audio === undefined || c.audio === true) {
-          c.audio = {autoGainControl: false, echoCancellation: true, noiseSuppression: true};
-        } else if (c.audio && typeof c.audio === "object") {
-          c.audio = {...c.audio, autoGainControl: false};
-        }
+        c.audio = forceAudio(c.audio);
         return origGum(c);
       };
+      if (typeof md.enumerateDevices === "function") {
+        // no-op marker for health/debug
+      }
       window.__gsm2GumPatched = true;
+    }
+    // OpenClaw may tighten constraints after gUM; keep APM off.
+    if (window.MediaStreamTrack && MediaStreamTrack.prototype.applyConstraints && !window.__gsm2ApplyPatched) {
+      const origApply = MediaStreamTrack.prototype.applyConstraints;
+      MediaStreamTrack.prototype.applyConstraints = function(constraints) {
+        const c = constraints ? {...constraints} : {};
+        if (this.kind === "audio") {
+          // applyConstraints uses flat keys, not {audio: {...}}
+          Object.assign(c, apmOff);
+        }
+        return origApply.call(this, c);
+      };
+      window.__gsm2ApplyPatched = true;
     }
   } catch (e) {}
   window.__gsm2TalkHook = true;
@@ -302,7 +332,7 @@ def chromium_args(url: str) -> list[str]:
         "--disable-infobars",
         "--ozone-platform=x11",
         # Reduce Chromium adjusting Pulse capture/source volumes via WebRTC APM.
-        "--disable-features=WebRtcAllowInputVolumeAdjustment",
+        "--disable-features=WebRtcAllowInputVolumeAdjustment,ChromeWideEchoCancellation",
         url,
     ]
 
