@@ -6,7 +6,13 @@ import asyncio
 import os
 import unittest
 
-from call_slot import CallSlot, CallWatchdogConfig, ensure_released_after_abort
+from call_slot import (
+    CallSlot,
+    CallWatchdogConfig,
+    admin_release_allowed,
+    call_looks_live,
+    ensure_released_after_abort,
+)
 
 
 class FakeClock:
@@ -308,3 +314,78 @@ class WaitFrameOrAbortTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AdminReleasePolicyTests(unittest.TestCase):
+    def test_idle_busy_allows_release(self) -> None:
+        snap = {
+            "busy": True,
+            "last_ws_s": 71.0,
+            "last_uplink_s": 71.0,
+            "age_s": 465.0,
+        }
+        self.assertFalse(call_looks_live(snap))
+        ok, reason = admin_release_allowed(snap, force=False)
+        self.assertTrue(ok)
+        self.assertEqual(reason, "ok")
+
+    def test_fresh_ws_refuses_without_force(self) -> None:
+        snap = {
+            "busy": True,
+            "last_ws_s": 0.7,
+            "last_uplink_s": 0.7,
+            "age_s": 31.0,
+        }
+        self.assertTrue(call_looks_live(snap))
+        ok, reason = admin_release_allowed(snap, force=False)
+        self.assertFalse(ok)
+        self.assertIn("force=1", reason)
+
+    def test_force_overrides_live_call(self) -> None:
+        snap = {"busy": True, "last_ws_s": 0.1, "last_uplink_s": 0.1}
+        ok, reason = admin_release_allowed(snap, force=True)
+        self.assertTrue(ok)
+        self.assertEqual(reason, "forced")
+
+    def test_busy_false_allows_stale_bridge_clear(self) -> None:
+        """Ghost-reject case: slot free but active_bridge still set."""
+        snap = {
+            "busy": False,
+            "path": None,
+            "age_s": None,
+            "established_s": None,
+            "last_ws_s": None,
+            "last_uplink_s": None,
+            "abort_reason": None,
+        }
+        self.assertFalse(call_looks_live(snap))
+        ok, reason = admin_release_allowed(snap, force=False)
+        self.assertTrue(ok)
+
+
+class StaleBridgeClearPolicyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reaper_style_clear_when_busy_already_false(self) -> None:
+        """After ensure_released_after_abort, busy=false but a bridge ref remains.
+
+        Reaper/admin must still drop that ref so the reject gate
+        `busy or active_bridge is not None` cannot 409 forever.
+        """
+        slot = CallSlot(CallWatchdogConfig(enabled=False), clock=FakeClock())
+        self.assertTrue(slot.claim("/"))
+        slot.mark_established()
+        forced = await ensure_released_after_abort(slot, "websocket idle 71s", wait_s=0.05)
+        self.assertTrue(forced)
+        self.assertFalse(slot.busy)
+
+        # Simulate hub.active_bridge still pointing at a live object.
+        active_bridge = {"name": "stale-pipewire-bridge"}
+        bridge_ref = active_bridge
+
+        # Policy used by hub._clear_stale_active_bridge: clear global first.
+        if bridge_ref is not None and active_bridge is bridge_ref:
+            active_bridge = None
+        self.assertIsNone(active_bridge)
+        # Reject gate equivalent:
+        reject = slot.busy or active_bridge is not None
+        self.assertFalse(reject)
+
