@@ -1,0 +1,12 @@
+[Unit]
+Description=Run OpenClaw e2e self-test every 30 minutes (idle-only inside script)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30min
+AccuracySec=1min
+Persistent=true
+Unit=gsm2computer-openclaw-e2e.service
+
+[Install]
+WantedBy=timers.target

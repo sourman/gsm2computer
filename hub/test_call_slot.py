@@ -389,3 +389,50 @@ class StaleBridgeClearPolicyTests(unittest.IsolatedAsyncioTestCase):
         reject = slot.busy or active_bridge is not None
         self.assertFalse(reject)
 
+
+class E2EPathTests(unittest.TestCase):
+    def test_path_is_e2e(self):
+        self.assertTrue(CallSlot.path_is_e2e("/e2e-test"))
+        self.assertTrue(CallSlot.path_is_e2e("e2e-test"))
+        self.assertTrue(CallSlot.path_is_e2e("/e2e-test/extra"))
+        self.assertFalse(CallSlot.path_is_e2e("/"))
+        self.assertFalse(CallSlot.path_is_e2e("/loopback"))
+
+    def test_claim_sets_e2e_flag(self):
+        slot = CallSlot()
+        self.assertTrue(slot.claim("/e2e-test"))
+        self.assertTrue(slot.is_e2e)
+        snap = slot.snapshot()
+        self.assertTrue(snap.get("e2e"))
+        slot.release()
+        self.assertFalse(slot.is_e2e)
+
+
+class PreemptE2ETests(unittest.IsolatedAsyncioTestCase):
+    async def test_preempt_e2e(self):
+        from call_slot import preempt_e2e_for_real_call
+
+        slot = CallSlot()
+        self.assertTrue(slot.claim("/e2e-test"))
+        # Release from another task shortly after abort (simulates handler finally).
+        async def releaser():
+            await slot.abort.wait()
+            await asyncio.sleep(0.05)
+            slot.release()
+
+        task = asyncio.create_task(releaser())
+        ok = await preempt_e2e_for_real_call(slot, wait_s=2.0, poll_s=0.02)
+        await task
+        self.assertTrue(ok)
+        self.assertFalse(slot.busy)
+
+    async def test_preempt_skips_real_holder(self):
+        from call_slot import preempt_e2e_for_real_call
+
+        slot = CallSlot()
+        self.assertTrue(slot.claim("/"))
+        ok = await preempt_e2e_for_real_call(slot, wait_s=0.2)
+        self.assertFalse(ok)
+        self.assertTrue(slot.busy)
+        slot.release()
+

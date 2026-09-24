@@ -23,6 +23,7 @@ from call_slot import (
     CallWatchdogConfig,
     admin_release_allowed,
     ensure_released_after_abort,
+    preempt_e2e_for_real_call,
     wait_or_abort,
 )
 from urllib.parse import parse_qs, urlsplit
@@ -985,6 +986,99 @@ async def _watch_talk_frames_without_energy(
             )
 
 
+
+def _tap_stream_peak(tap_summary: dict[str, Any], name: str) -> float:
+    streams = tap_summary.get("streams") or {}
+    stream = streams.get(name) or {}
+    try:
+        return float(stream.get("peak") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _tap_duration_s(tap_summary: dict[str, Any]) -> float:
+    streams = tap_summary.get("streams") or {}
+    best = 0.0
+    for stream in streams.values():
+        if not isinstance(stream, dict):
+            continue
+        try:
+            best = max(best, float(stream.get("seconds") or 0.0))
+        except (TypeError, ValueError):
+            continue
+    return best
+
+
+_e2e_after_silent_lock = asyncio.Lock()
+_e2e_after_silent_scheduled = False
+
+
+def _maybe_schedule_e2e_after_silent_call(tap_summary: dict[str, Any]) -> None:
+    """If a real call >10s had silent OpenClaw reply audio, queue an e2e self-test."""
+    global _e2e_after_silent_scheduled
+    if os.environ.get("GSM2COMPUTER_E2E_AFTER_SILENT", "1").lower() in ("0", "false", "no", "off"):
+        return
+    meta = tap_summary.get("meta") or {}
+    if meta.get("e2e"):
+        return
+    duration = _tap_duration_s(tap_summary)
+    if duration < float(os.environ.get("GSM2COMPUTER_E2E_SILENT_MIN_S", "10")):
+        return
+    spk = _tap_stream_peak(tap_summary, "openclaw-spk-48k-stereo")
+    downlink = _tap_stream_peak(tap_summary, "gsm-downlink-8k-mono")
+    thresh = float(os.environ.get("GSM2COMPUTER_E2E_PEAK_MIN", "0.02"))
+    if spk >= thresh or downlink >= thresh:
+        return
+    LOG.warning(
+        "silent OpenClaw reply after %.1fs call (spk=%.4f dl=%.4f); scheduling e2e",
+        duration,
+        spk,
+        downlink,
+    )
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(_run_e2e_after_silent_call(tap_summary.get("id") or "unknown"))
+
+
+async def _run_e2e_after_silent_call(call_id: str) -> None:
+    global _e2e_after_silent_scheduled
+    async with _e2e_after_silent_lock:
+        if _e2e_after_silent_scheduled:
+            return
+        _e2e_after_silent_scheduled = True
+    try:
+        await asyncio.sleep(2.0)
+        if live_call.busy or (active_bridge is not None):
+            LOG.info("skip e2e after silent call %s: line busy again", call_id)
+            return
+        cmd = os.environ.get(
+            "GSM2COMPUTER_E2E_CMD",
+            "systemctl --user start gsm2computer-openclaw-e2e.service",
+        )
+        LOG.info("starting e2e after silent call %s: %s", call_id, cmd)
+        proc = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            _, err = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+        except asyncio.TimeoutError:
+            LOG.warning("e2e start command timed out")
+            return
+        if proc.returncode:
+            LOG.warning(
+                "e2e start failed rc=%s %s",
+                proc.returncode,
+                (err or b"").decode("utf-8", "replace")[:300],
+            )
+    finally:
+        async with _e2e_after_silent_lock:
+            _e2e_after_silent_scheduled = False
+
+
 async def handle_websocket(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
@@ -994,15 +1088,47 @@ async def handle_websocket(
     global active_bridge, active_openclaw, active_ws_writer, last_call_tap
 
     tap: Optional[CallTap] = None
+    e2e = CallSlot.path_is_e2e(path)
     key = headers.get("sec-websocket-key")
     if not key:
         writer.write(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
         await writer.drain()
         return
 
-    if live_call.busy or active_bridge is not None:
+    incoming_e2e = CallSlot.path_is_e2e(path)
+    if (live_call.busy or active_bridge is not None) and not incoming_e2e:
+        # Real Pixel call preempts a synthetic e2e self-test (never leave Safwat busy).
+        if live_call.busy and live_call.is_e2e:
+            LOG.warning(
+                "preempting e2e-test for real call path=%s %s",
+                path,
+                live_call.snapshot(),
+            )
+            freed = await preempt_e2e_for_real_call(live_call, wait_s=5.0)
+            # Wait for the e2e handler finally-path to drop active_bridge too.
+            deadline = time.monotonic() + 5.0
+            while active_bridge is not None and time.monotonic() < deadline:
+                await asyncio.sleep(0.1)
+            if not freed or live_call.busy or active_bridge is not None:
+                LOG.warning(
+                    "e2e preempt incomplete; rejecting real call %s active_bridge=%s",
+                    live_call.snapshot(),
+                    active_bridge is not None,
+                )
+                writer.write(b"HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n")
+                await writer.drain()
+                return
+        elif live_call.busy or active_bridge is not None:
+            LOG.warning(
+                "rejecting websocket: call already in progress %s",
+                live_call.snapshot(),
+            )
+            writer.write(b"HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n")
+            await writer.drain()
+            return
+    elif live_call.busy or active_bridge is not None:
         LOG.warning(
-            "rejecting websocket: call already in progress %s",
+            "rejecting e2e websocket: call already in progress %s",
             live_call.snapshot(),
         )
         writer.write(b"HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n")
@@ -1035,8 +1161,13 @@ async def handle_websocket(
         active_ws_writer = writer
 
         loopback = path.strip("/") == "loopback" or path.startswith("/loopback")
-        LOG.info("WebSocket connected path=%s loopback=%s", path, loopback)
-        tap = CallTap.maybe_open(loopback=loopback, mode="off" if loopback else OPENCLAW_TALK_MODE)
+        e2e = CallSlot.path_is_e2e(path)
+        LOG.info("WebSocket connected path=%s loopback=%s e2e=%s", path, loopback, e2e)
+        tap = CallTap.maybe_open(
+            loopback=loopback,
+            mode="off" if loopback else OPENCLAW_TALK_MODE,
+            e2e=e2e,
+        )
         if loopback:
             result = await set_switchboard_mode("loopback")
             LOG.info("loopback call: %s", result.get("applied") or result.get("error"))
@@ -1131,6 +1262,7 @@ async def handle_websocket(
                     "preferred": {"format": "audio/pcm", "rate": BUS_RATE, "encoding": "s16le"},
                 },
                 "talk": OPENCLAW_TALK_MODE if not loopback else "off",
+                "e2e": e2e,
             },
         }
         await ws_send_text(writer, json.dumps(session_ack))
@@ -1260,6 +1392,9 @@ async def handle_websocket(
                 last_call_tap = await asyncio.wait_for(tap.close(), timeout=5.0)
             except Exception:
                 LOG.warning("tap close in finally failed", exc_info=True)
+            else:
+                if last_call_tap is not None and not e2e:
+                    _maybe_schedule_e2e_after_silent_call(last_call_tap)
 
 
 def _enable_tcp_keepalive(sock: socket.socket) -> None:

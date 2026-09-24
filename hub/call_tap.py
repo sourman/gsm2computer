@@ -237,9 +237,10 @@ class _Stream:
 
 
 class CallTap:
-    def __init__(self, call_id: str, meta: dict[str, Any]) -> None:
+    def __init__(self, call_id: str, meta: dict[str, Any], record_dir: Optional[Path] = None) -> None:
         self.call_id = call_id
-        self.dir = RECORD_DIR / call_id
+        root = record_dir or RECORD_DIR
+        self.dir = root / call_id
         self.dir.mkdir(parents=True, exist_ok=True)
         self.meta = meta
         self._streams: dict[str, _Stream] = {}
@@ -249,15 +250,38 @@ class CallTap:
         LOG.info("call tap dir %s", self.dir)
 
     @classmethod
-    def maybe_open(cls, *, loopback: bool, mode: str) -> Optional["CallTap"]:
+    def maybe_open(
+        cls,
+        *,
+        loopback: bool,
+        mode: str,
+        e2e: bool = False,
+    ) -> Optional["CallTap"]:
         if not _enabled():
             return None
-        RECORD_DIR.mkdir(parents=True, exist_ok=True)
-        _prune(RECORD_DIR, KEEP_CALLS)
+        record_dir = RECORD_DIR
+        if e2e:
+            record_dir = Path(
+                os.environ.get(
+                    "GSM2COMPUTER_E2E_RECORD_DIR",
+                    str(Path.home() / "gsm2computer-e2e-calls"),
+                )
+            )
+        record_dir.mkdir(parents=True, exist_ok=True)
+        _prune(record_dir, KEEP_CALLS)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        kind = "loopback" if loopback else mode
+        if e2e:
+            kind = "e2e-test"
+        elif loopback:
+            kind = "loopback"
+        else:
+            kind = mode
         call_id = f"{stamp}-{kind}"
-        return cls(call_id, {"loopback": loopback, "mode": mode, "id": call_id})
+        return cls(
+            call_id,
+            {"loopback": loopback, "mode": mode, "id": call_id, "e2e": e2e},
+            record_dir=record_dir,
+        )
 
     def write_s16(self, name: str, pcm: bytes, rate: int, channels: int = 1) -> None:
         if self._closed or not pcm:

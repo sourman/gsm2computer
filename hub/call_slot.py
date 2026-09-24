@@ -68,8 +68,15 @@ class CallSlot:
         self.last_ws_at: Optional[float] = None
         self.last_uplink_at: Optional[float] = None
         self.path: str = ""
+        self.is_e2e: bool = False
         self.abort = asyncio.Event()
         self.abort_reason: Optional[str] = None
+
+    @staticmethod
+    def path_is_e2e(path: str) -> bool:
+        """Synthetic OpenClaw self-test paths (must yield to a real Pixel call)."""
+        cleaned = (path or "").strip().strip("/")
+        return cleaned == "e2e-test" or cleaned.startswith("e2e-test/")
 
     def claim(self, path: str = "") -> bool:
         if self.busy:
@@ -80,6 +87,7 @@ class CallSlot:
         self.last_ws_at = None
         self.last_uplink_at = None
         self.path = path
+        self.is_e2e = self.path_is_e2e(path)
         self.abort = asyncio.Event()
         self.abort_reason = None
         return True
@@ -110,6 +118,7 @@ class CallSlot:
         self.last_ws_at = None
         self.last_uplink_at = None
         self.path = ""
+        self.is_e2e = False
         self.abort_reason = None
         self.abort.set()
         self.abort = asyncio.Event()
@@ -165,6 +174,7 @@ class CallSlot:
         return {
             "busy": self.busy,
             "path": self.path or None,
+            "e2e": self.is_e2e,
             "age_s": _ago(self.claimed_at),
             "established_s": _ago(self.established_at),
             "last_ws_s": _ago(self.last_ws_at),
@@ -239,6 +249,28 @@ async def ensure_released_after_abort(
         return True
     return False
 
+
+
+async def preempt_e2e_for_real_call(
+    slot: CallSlot,
+    *,
+    wait_s: float = 5.0,
+    poll_s: float = 0.1,
+) -> bool:
+    """Abort a synthetic e2e holder so a real Pixel call can claim the slot.
+
+    Returns True when the slot is free (or was already free). Returns False if
+    the e2e session did not release in time — caller should still 409.
+    """
+    if not slot.busy:
+        return True
+    if not slot.is_e2e:
+        return False
+    slot.abort_call("preempted by real call")
+    deadline = time.monotonic() + wait_s
+    while slot.busy and time.monotonic() < deadline:
+        await asyncio.sleep(poll_s)
+    return not slot.busy
 
 async def wait_or_abort(awaitable, abort: asyncio.Event):
     """Return awaitable's result, or None if abort fires first."""

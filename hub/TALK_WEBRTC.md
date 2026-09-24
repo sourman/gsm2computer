@@ -108,3 +108,15 @@ pactl list sources short | grep phone_uplink
 # CDP health
 python3 hub/talk_chromium.py health
 ```
+
+## OpenClaw e2e self-test
+
+`hub/openclaw_e2e.py` injects known TTS over `/e2e-test` (Pixel-shaped PCM
+WebSocket). Pass requires an *unforced* OpenClaw reply (no `response.create`),
+non-silent `openclaw-spk` + `gsm-downlink`, and a non-empty transcript.
+
+- systemd: `gsm2computer-openclaw-e2e.timer` (every 30 min) + oneshot service
+- Hub also starts the oneshot after a real call &gt;10s with silent reply peaks
+- `/e2e-test` is preempted by a real Pixel path so Safwat never sees line-busy
+  from a self-test (exception to ADR 0004 for synthetic holders only)
+- Logs: `~/gsm2computer-e2e/e2e.log` (rotated); taps under `~/gsm2computer-e2e-calls/`

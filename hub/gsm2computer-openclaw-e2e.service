@@ -1,0 +1,17 @@
+[Unit]
+Description=gsm2computer OpenClaw e2e self-test (+ heal ladder)
+After=gsm2computer-hub.service talk-chromium.service openclaw-gateway.service
+Wants=gsm2computer-hub.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/gsm2computer-hub
+# Prefer Tailscale hub bind used on cup; script falls back if needed.
+Environment=GSM2COMPUTER_E2E_HUB=http://100.119.126.42:8787
+Environment=GSM2COMPUTER_HUB_DIR=%h/gsm2computer-hub
+Environment=PYTHONPATH=%h/gsm2computer-hub
+ExecStart=%h/gsm2computer-hub/.venv/bin/python %h/gsm2computer-hub/openclaw_e2e.py --ladder
+Nice=10
+
+[Install]
+WantedBy=default.target

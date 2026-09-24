@@ -608,6 +608,31 @@ class OpenClawTalkUI:
         finally:
             await session.close()
 
+
+    async def reload_control_ui(self) -> None:
+        """Soft heal: stop Talk, reload Control UI page, ready for next start_talk."""
+        await self.stop_talk()
+        if not cdp_available():
+            raise TalkUiError("cdp unavailable for control ui reload")
+        session = await self._connect_page()
+        try:
+            await self._ensure_control_ui(session)
+            # Force a fresh document even when already on the chat URL.
+            await session.call("Page.reload", {"ignoreCache": True})
+            deadline = time.monotonic() + PAGE_TIMEOUT_S
+            last = None
+            while time.monotonic() < deadline:
+                last = await session.evaluate(PAGE_STATE_JS)
+                if isinstance(last, dict) and last.get("hasTalkButton"):
+                    break
+                await asyncio.sleep(0.35)
+            else:
+                raise TalkUiError(f"control ui reload missing talk button: {last!r}")
+            await session.evaluate(HOOK_JS)
+            LOG.info("control ui reloaded hasTalk=%s", True)
+        finally:
+            await session.close()
+
     async def restart_talk(self) -> None:
         """Refresh Control UI Talk before provider session limits (~30 min)."""
         if self._closed:
