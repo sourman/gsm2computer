@@ -1,322 +1,409 @@
-"""HTTP routes for /portal and the SMS outbox. Does not touch the Talk WebSocket path."""
+#!/usr/bin/env python3
+"""Portal REST, SSE, static files, SMS outbox, and call ingest (ADR 0006)."""
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
 import mimetypes
+import os
+import re
 from pathlib import Path
-from typing import Any, Optional
-from urllib.parse import unquote
+from typing import Any, Callable, Optional
+from urllib.parse import parse_qs, unquote, urlsplit
 
-from portal_store import HUB_DIR, get_bus, get_store
+from portal_store import PortalStore, resolve_call_recording, utc_now
 
 LOG = logging.getLogger("gsm2computer-hub")
 
-PORTAL_DIST = HUB_DIR / "portal" / "dist"
-API_PREFIX = "/portal/api/"
+OUTBOX_ACK_RE = re.compile(r"^/sms/outbox/([^/]+)/ack$")
+CALL_RECORDING_RE = re.compile(r"^/portal/api/calls/([^/]+)/recording$")
+RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)")
 
-_STATUS = {
-    200: "OK",
-    201: "Created",
-    301: "Moved Permanently",
-    400: "Bad Request",
-    404: "Not Found",
-    405: "Method Not Allowed",
-    500: "Internal Server Error",
-    503: "Service Unavailable",
-}
+ModeGetter = Callable[[], Optional[str]]
+TapGetter = Callable[[], Optional[dict[str, Any]]]
 
 
-def _http(status: int, headers: dict[str, str], payload: bytes) -> bytes:
-    lines = [f"HTTP/1.1 {status} {_STATUS.get(status, '')}".rstrip()]
-    for key, value in headers.items():
-        lines.append(f"{key}: {value}")
+class EventBus:
+    def __init__(self) -> None:
+        self._subs: set[asyncio.Queue] = set()
+
+    def subscribe(self) -> asyncio.Queue:
+        q: asyncio.Queue = asyncio.Queue(maxsize=64)
+        self._subs.add(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue) -> None:
+        self._subs.discard(q)
+
+    def publish(self, event_type: str, data: dict[str, Any]) -> None:
+        payload = (event_type, data)
+        for q in list(self._subs):
+            try:
+                q.put_nowait(payload)
+            except asyncio.QueueFull:
+                LOG.warning("portal sse drop event=%s (subscriber queue full)", event_type)
+
+
+def json_response(status: int, body: Any, extra_headers: Optional[dict] = None) -> bytes:
+    payload = json.dumps(body).encode("utf-8")
+    status_text = {
+        200: "OK",
+        201: "Created",
+        400: "Bad Request",
+        404: "Not Found",
+        405: "Method Not Allowed",
+        409: "Conflict",
+        500: "Internal Server Error",
+        503: "Service Unavailable",
+    }.get(status, "")
+    lines = [
+        f"HTTP/1.1 {status} {status_text}".rstrip(),
+        "Content-Type: application/json; charset=utf-8",
+        f"Content-Length: {len(payload)}",
+        "Connection: close",
+    ]
+    if extra_headers:
+        for k, v in extra_headers.items():
+            lines.append(f"{k}: {v}")
     lines.extend(["", ""])
     return "\r\n".join(lines).encode("ascii") + payload
 
 
-def json_bytes(status: int, body: Any, extra: Optional[dict[str, str]] = None) -> bytes:
-    payload = json.dumps(body).encode("utf-8")
-    headers = {
-        "Content-Type": "application/json; charset=utf-8",
-        "Content-Length": str(len(payload)),
-        "Connection": "close",
-        "Cache-Control": "no-store",
-    }
-    if extra:
-        headers.update(extra)
-    return _http(status, headers, payload)
+def raw_response(
+    status: int,
+    payload: bytes,
+    content_type: str,
+    extra_headers: Optional[dict] = None,
+    extra_status: str = "",
+) -> bytes:
+    status_text = extra_status or {
+        200: "OK",
+        206: "Partial Content",
+        302: "Found",
+        404: "Not Found",
+        416: "Range Not Satisfiable",
+        503: "Service Unavailable",
+    }.get(status, "")
+    lines = [
+        f"HTTP/1.1 {status} {status_text}".rstrip(),
+        f"Content-Type: {content_type}",
+        f"Content-Length: {len(payload)}",
+        "Connection: close",
+    ]
+    if extra_headers:
+        for k, v in extra_headers.items():
+            lines.append(f"{k}: {v}")
+    lines.extend(["", ""])
+    return "\r\n".join(lines).encode("ascii") + payload
 
 
-async def _write_close(writer: asyncio.StreamWriter, data: bytes) -> None:
-    try:
-        writer.write(data)
-        await writer.drain()
-    finally:
-        writer.close()
-        try:
-            await writer.wait_closed()
-        except Exception:
-            pass
+def _tap_summary_text(tap: Optional[dict[str, Any]]) -> Optional[str]:
+    if not tap:
+        return None
+    return json.dumps(tap, ensure_ascii=False)
 
 
-def _json_body(body: bytes) -> dict[str, Any]:
-    if not body:
-        return {}
-    try:
-        payload = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError("invalid json") from exc
-    if not isinstance(payload, dict):
-        raise ValueError("invalid json")
-    return payload
-
-
-async def dispatch_portal(
-    method: str,
-    path: str,
-    query: dict[str, str],
-    headers: dict[str, str],
-    body: bytes,
-    reader: asyncio.StreamReader,
-    writer: asyncio.StreamWriter,
-) -> bool:
-    """Handle portal/outbox routes. True = response already written and writer closed."""
-    if path in ("/sms/outbox", "/sms/outbox/"):
-        await _handle_outbox(method, writer)
-        return True
-    if path in ("/sms/outbox/ack", "/sms/outbox/ack/"):
-        await _handle_outbox_ack(method, body, writer)
-        return True
-    if path.rstrip("/") == "/portal" and path != "/portal/":
-        payload = b""
-        await _write_close(
-            writer,
-            _http(
-                301,
-                {
-                    "Location": "/portal/",
-                    "Content-Length": "0",
-                    "Connection": "close",
-                },
-                payload,
-            ),
+def _default_record_dir() -> Path:
+    return Path(
+        os.environ.get(
+            "GSM2COMPUTER_CALL_RECORD_DIR",
+            str(Path.home() / "gsm2computer-calls"),
         )
-        return True
-    if not path.startswith("/portal/") and path != "/portal/":
-        return False
-    if path.startswith(API_PREFIX) or path.rstrip("/") == "/portal/api":
-        await _handle_api(method, path, query, body, reader, writer)
-        return True
-    if method not in ("GET", "HEAD"):
-        await _write_close(writer, json_bytes(405, {"ok": False, "error": "method not allowed"}))
-        return True
-    await _serve_static(path, method == "HEAD", writer)
-    return True
-
-
-async def _handle_outbox(method: str, writer: asyncio.StreamWriter) -> None:
-    if method != "GET":
-        await _write_close(writer, json_bytes(405, {"ok": False, "error": "method not allowed"}))
-        return
-    await _write_close(writer, json_bytes(200, {"ok": True, "outbox": get_store().list_outbox()}))
-
-
-async def _handle_outbox_ack(method: str, body: bytes, writer: asyncio.StreamWriter) -> None:
-    if method != "POST":
-        await _write_close(writer, json_bytes(405, {"ok": False, "error": "method not allowed"}))
-        return
-    try:
-        payload = _json_body(body)
-    except ValueError:
-        await _write_close(writer, json_bytes(400, {"ok": False, "error": "invalid json"}))
-        return
-    token = str(payload.get("id") or payload.get("outboxId") or "").strip()
-    rec = get_store().ack_outbox(token)
-    if rec is None:
-        await _write_close(writer, json_bytes(404, {"ok": False, "error": "outbox item not found"}))
-        return
-    get_bus().publish(rec)
-    await _write_close(writer, json_bytes(200, {"ok": True, "message": rec}))
-
-
-async def _handle_api(
-    method: str,
-    path: str,
-    query: dict[str, str],
-    body: bytes,
-    reader: asyncio.StreamReader,
-    writer: asyncio.StreamWriter,
-) -> None:
-    route = path[len(API_PREFIX) :].strip("/") if path.startswith(API_PREFIX) else ""
-    if route == "events":
-        if method != "GET":
-            await _write_close(writer, json_bytes(405, {"ok": False, "error": "method not allowed"}))
-            return
-        await _sse_events(reader, writer)
-        return
-    if route == "threads":
-        if method != "GET":
-            await _write_close(writer, json_bytes(405, {"ok": False, "error": "method not allowed"}))
-            return
-        await _write_close(writer, json_bytes(200, get_store().list_threads()))
-        return
-    if route == "messages":
-        if method == "GET":
-            peer = unquote(query.get("peer") or "")
-            if not peer.strip():
-                await _write_close(writer, json_bytes(400, {"ok": False, "error": "peer required"}))
-                return
-            await _write_close(writer, json_bytes(200, get_store().list_messages(peer)))
-            return
-        await _write_close(writer, json_bytes(405, {"ok": False, "error": "method not allowed"}))
-        return
-    if route == "messages/send":
-        if method != "POST":
-            await _write_close(writer, json_bytes(405, {"ok": False, "error": "method not allowed"}))
-            return
-        try:
-            payload = _json_body(body)
-            rec = get_store().queue_outbound(str(payload.get("to") or ""), str(payload.get("body") or ""))
-        except ValueError as exc:
-            await _write_close(writer, json_bytes(400, {"ok": False, "error": str(exc)}))
-            return
-        get_bus().publish(rec)
-        await _write_close(writer, json_bytes(200, {"ok": True, "message": rec}))
-        return
-    if route == "calls":
-        if method != "GET":
-            await _write_close(writer, json_bytes(405, {"ok": False, "error": "method not allowed"}))
-            return
-        await _write_close(writer, json_bytes(200, get_store().list_calls()))
-        return
-    await _write_close(writer, json_bytes(404, {"ok": False, "error": "not found"}))
-
-
-async def _sse_events(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-    headers = (
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/event-stream; charset=utf-8\r\n"
-        "Cache-Control: no-cache, no-store\r\n"
-        "Connection: keep-alive\r\n"
-        "X-Accel-Buffering: no\r\n"
-        "\r\n"
     )
-    writer.write(headers.encode("ascii"))
-    await writer.drain()
-    bus = get_bus()
-    queue = bus.subscribe()
-    try:
-        writer.write(b": connected\n\n")
-        await writer.drain()
-        while True:
-            get_task = asyncio.create_task(queue.get())
-            read_task = asyncio.create_task(reader.read(1))
-            done, pending = await asyncio.wait(
-                {get_task, read_task},
-                timeout=15.0,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for task in pending:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-            if not done:
-                writer.write(b": ping\n\n")
-                await writer.drain()
-                continue
-            if read_task in done:
-                incoming = read_task.result()
-                if not incoming:
-                    break
-            if get_task not in done:
-                continue
-            event = get_task.result()
-            name = str(event.get("type") or "message")
-            payload = json.dumps(event)
-            frame = f"event: {name}\ndata: {payload}\n\n".encode("utf-8")
-            writer.write(frame)
-            await writer.drain()
-    except (ConnectionError, asyncio.IncompleteReadError, BrokenPipeError, ConnectionResetError):
-        LOG.debug("portal sse client disconnected")
-    except Exception:
-        LOG.exception("portal sse error")
-    finally:
-        bus.unsubscribe(queue)
-        writer.close()
-        try:
-            await writer.wait_closed()
-        except Exception:
-            pass
-        # reader is unused except to keep the request task associated with the socket
-        _ = reader
 
 
-def _safe_dist_file(rel: str) -> Optional[Path]:
-    if not PORTAL_DIST.is_dir():
-        return None
-    cleaned = rel.replace("\\", "/").lstrip("/")
-    if ".." in Path(cleaned).parts:
-        return None
-    candidate = (PORTAL_DIST / cleaned).resolve()
-    try:
-        candidate.relative_to(PORTAL_DIST.resolve())
-    except ValueError:
-        return None
-    if candidate.is_file():
-        return candidate
-    return None
-
-
-async def _serve_static(path: str, head_only: bool, writer: asyncio.StreamWriter) -> None:
-    rel = path[len("/portal") :].lstrip("/")
-    if not rel or rel.endswith("/"):
-        rel = f"{rel}index.html" if rel else "index.html"
-    target = _safe_dist_file(rel)
-    if target is None and not rel.startswith("api/"):
-        target = _safe_dist_file("index.html")
-    if target is None:
-        if not PORTAL_DIST.is_dir():
-            html = (
-                b"<!doctype html><meta charset=utf-8><title>Portal not built</title>"
-                b"<body style='font-family:sans-serif;background:#1a1410;color:#f4ead8'>"
-                b"<p>Hub portal dist is missing. From <code>hub/portal</code> run "
-                b"<code>npm install && npm run build</code>.</p>"
-            )
-            await _write_close(
-                writer,
-                _http(
-                    503,
-                    {
-                        "Content-Type": "text/html; charset=utf-8",
-                        "Content-Length": str(len(html)),
-                        "Connection": "close",
-                    },
-                    html,
-                ),
-            )
-            return
-        await _write_close(writer, json_bytes(404, {"ok": False, "error": "not found"}))
-        return
-    data = target.read_bytes()
-    mime, _ = mimetypes.guess_type(str(target))
-    if target.suffix == ".js":
-        mime = "text/javascript"
-    elif target.suffix == ".webmanifest":
-        mime = "application/manifest+json"
-    elif not mime:
-        mime = "application/octet-stream"
-    cache = "no-cache" if target.name in {"index.html", "sw.js", "manifest.json"} else "public, max-age=31536000, immutable"
+def _file_range_response(path: Path, range_header: str, content_type: str) -> bytes:
+    data = path.read_bytes()
+    size = len(data)
     headers = {
-        "Content-Type": mime,
-        "Content-Length": str(len(data)),
-        "Connection": "close",
-        "Cache-Control": cache,
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "private, max-age=60",
     }
-    payload = b"" if head_only else data
-    if head_only:
-        headers["Content-Length"] = str(len(data))
-    await _write_close(writer, _http(200, headers, payload))
+    match = RANGE_RE.match((range_header or "").strip())
+    if not match or (match.group(1) == "" and match.group(2) == ""):
+        return raw_response(200, data, content_type, extra_headers=headers)
+    start_s, end_s = match.group(1), match.group(2)
+    if start_s == "":
+        suffix = int(end_s)
+        start = max(0, size - suffix)
+        end = size - 1 if size else 0
+    else:
+        start = int(start_s)
+        end = int(end_s) if end_s else size - 1
+    if size == 0 or start >= size or start < 0:
+        headers["Content-Range"] = f"bytes */{size}"
+        return raw_response(416, b"", content_type, extra_headers=headers)
+    end = min(end, size - 1)
+    chunk = data[start : end + 1]
+    headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    return raw_response(206, chunk, content_type, extra_headers=headers)
+
+
+class PortalApp:
+    def __init__(
+        self,
+        store: PortalStore,
+        events: EventBus,
+        dist_dir: Path,
+        mode_getter: Optional[ModeGetter] = None,
+        tap_getter: Optional[TapGetter] = None,
+        record_dir: Optional[Path] = None,
+    ) -> None:
+        self.store = store
+        self.events = events
+        self.dist_dir = Path(dist_dir)
+        self.mode_getter = mode_getter or (lambda: None)
+        self.tap_getter = tap_getter or (lambda: None)
+        self.record_dir = Path(record_dir) if record_dir is not None else _default_record_dir()
+
+    async def dispatch(
+        self,
+        method: str,
+        path: str,
+        headers: dict[str, str],
+        body: bytes,
+        writer: asyncio.StreamWriter,
+    ) -> str:
+        """Handle portal / outbox / calls routes.
+
+        Returns 'handled', 'stream', or 'unhandled'.
+        """
+        split = urlsplit(path)
+        route = split.path
+        query = parse_qs(split.query)
+
+        if method == "GET" and route == "/portal/api/events":
+            await self._sse(writer)
+            return "stream"
+
+        if method == "GET" and route == "/portal/api/threads":
+            writer.write(json_response(200, self.store.list_threads()))
+            return "handled"
+
+        if method == "GET" and route == "/portal/api/messages":
+            peer = (query.get("peer") or [""])[0]
+            if not peer.strip():
+                writer.write(json_response(400, {"ok": False, "error": "peer required"}))
+                return "handled"
+            writer.write(json_response(200, self.store.list_messages(peer)))
+            return "handled"
+
+        if method == "POST" and route == "/portal/api/messages/send":
+            writer.write(self._send_message(body))
+            return "handled"
+
+        if method == "GET" and route == "/portal/api/calls":
+            writer.write(json_response(200, self.store.list_calls()))
+            return "handled"
+
+        recording = CALL_RECORDING_RE.match(route)
+        if recording and method == "GET":
+            writer.write(self._call_recording(unquote(recording.group(1)), headers))
+            return "handled"
+
+        if method == "GET" and route == "/sms/outbox":
+            writer.write(json_response(200, {"ok": True, "items": self.store.claim_outbox_for_send()}))
+            return "handled"
+
+        ack = OUTBOX_ACK_RE.match(route)
+        if ack and method == "POST":
+            writer.write(self._ack_outbox(ack.group(1), body))
+            return "handled"
+
+        if method == "POST" and route == "/calls":
+            writer.write(self._add_call(body))
+            return "handled"
+
+        if route == "/portal" and method == "GET":
+            writer.write(
+                raw_response(
+                    302,
+                    b"",
+                    "text/plain",
+                    extra_headers={"Location": "/portal/"},
+                    extra_status="Found",
+                )
+            )
+            return "handled"
+
+        if route == "/" and method == "GET":
+            writer.write(
+                raw_response(
+                    302,
+                    b"",
+                    "text/plain",
+                    extra_headers={"Location": "/portal/"},
+                    extra_status="Found",
+                )
+            )
+            return "handled"
+
+        if route.startswith("/portal/") and method == "GET":
+            writer.write(self._static(route))
+            return "handled"
+
+        return "unhandled"
+
+    def _send_message(self, body: bytes) -> bytes:
+        try:
+            payload = json.loads(body.decode("utf-8") if body else "{}")
+        except json.JSONDecodeError:
+            return json_response(400, {"ok": False, "error": "invalid json"})
+        to_number = str(payload.get("to") or "")
+        text = str(payload.get("body") or "")
+        try:
+            queued = self.store.enqueue_outbound(to_number, text)
+        except ValueError as exc:
+            return json_response(400, {"ok": False, "error": str(exc)})
+        self.events.publish("message", queued["message"])
+        self.events.publish("outbox", {k: v for k, v in queued.items() if k != "message"})
+        return json_response(201, {"ok": True, **queued})
+
+    def _ack_outbox(self, item_id: str, body: bytes) -> bytes:
+        status = "sent"
+        error = None
+        if body:
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except json.JSONDecodeError:
+                payload = {}
+            raw_status = str(payload.get("status") or "").strip().lower()
+            if raw_status in {"sent", "failed"}:
+                status = raw_status
+            elif payload.get("ok") is False:
+                status = "failed"
+            error = payload.get("error")
+            if error is not None:
+                error = str(error)
+        result = self.store.ack_outbox(item_id, status=status, error=error)
+        if result is None:
+            return json_response(404, {"ok": False, "error": "outbox item not found"})
+        msg = self.store.get_message(item_id)
+        if msg:
+            self.events.publish("message", msg)
+        self.events.publish("outbox", result)
+        return json_response(200, {"ok": True, "item": result})
+
+    def _add_call(self, body: bytes) -> bytes:
+        try:
+            payload = json.loads(body.decode("utf-8") if body else "{}")
+        except json.JSONDecodeError:
+            return json_response(400, {"ok": False, "error": "invalid json"})
+        number = str(payload.get("number") or "")
+        if not number.strip():
+            return json_response(400, {"ok": False, "error": "number required"})
+        direction = str(payload.get("direction") or "in")
+        started_at = str(payload.get("started_at") or utc_now())
+        try:
+            duration_sec = int(payload.get("duration_sec") or 0)
+        except (TypeError, ValueError):
+            return json_response(400, {"ok": False, "error": "duration_sec must be int"})
+        mode = str(payload.get("switchboard_mode") or "").strip() or None
+        session_id = str(payload.get("session_id") or "").strip() or None
+        tap_summary = payload.get("tap_summary")
+        if isinstance(tap_summary, dict):
+            tap_summary = json.dumps(tap_summary, ensure_ascii=False)
+        elif tap_summary is not None:
+            tap_summary = str(tap_summary) or None
+
+        tap = self.tap_getter()
+        if not mode:
+            mode = self.mode_getter()
+        if not session_id and tap:
+            session_id = str(tap.get("id") or "") or None
+        if not tap_summary:
+            tap_summary = _tap_summary_text(tap)
+
+        item = self.store.add_call(
+            direction=direction,
+            number=number,
+            started_at=started_at,
+            duration_sec=duration_sec,
+            switchboard_mode=mode,
+            session_id=session_id,
+            tap_summary=tap_summary,
+        )
+        self.events.publish("call", item)
+        return json_response(201, {"ok": True, "call": item})
+
+    def _call_recording(self, call_id: str, headers: dict[str, str]) -> bytes:
+        call = self.store.get_call(call_id)
+        if call is None:
+            return json_response(404, {"ok": False, "error": "call not found"})
+        path = resolve_call_recording(call, self.record_dir)
+        if path is None or not path.is_file():
+            return json_response(404, {"ok": False, "error": "no recording"})
+        return _file_range_response(path, headers.get("range") or "", "audio/mpeg")
+
+    def _static(self, route: str) -> bytes:
+        dist = self.dist_dir.resolve()
+        if not dist.is_dir():
+            return json_response(
+                503,
+                {"ok": False, "error": "portal dist missing; run npm run build in hub/portal"},
+            )
+        rel = route[len("/portal/") :]
+        if not rel or rel.endswith("/"):
+            rel = (rel or "") + "index.html"
+        candidate = (dist / rel).resolve()
+        try:
+            candidate.relative_to(dist)
+        except ValueError:
+            return json_response(404, {"ok": False, "error": "not found"})
+        if candidate.is_dir():
+            candidate = candidate / "index.html"
+        if not candidate.is_file():
+            index = dist / "index.html"
+            if rel.endswith(".html") is False and "." not in Path(rel).name and index.is_file():
+                candidate = index
+            else:
+                return json_response(404, {"ok": False, "error": "not found"})
+        data = candidate.read_bytes()
+        ctype, _ = mimetypes.guess_type(str(candidate))
+        if candidate.suffix == ".webmanifest" or candidate.name == "manifest.json":
+            ctype = "application/manifest+json"
+        elif candidate.suffix == ".js":
+            ctype = "application/javascript; charset=utf-8"
+        elif candidate.suffix == ".css":
+            ctype = "text/css; charset=utf-8"
+        elif candidate.suffix == ".html":
+            ctype = "text/html; charset=utf-8"
+        elif not ctype:
+            ctype = "application/octet-stream"
+        headers = {}
+        if candidate.name == "index.html":
+            headers["Cache-Control"] = "no-cache"
+        elif candidate.suffix in {".js", ".css"} and "index-" in candidate.name:
+            headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return raw_response(200, data, ctype, extra_headers=headers or None)
+
+    async def _sse(self, writer: asyncio.StreamWriter) -> None:
+        headers = (
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: text/event-stream; charset=utf-8\r\n"
+            "Cache-Control: no-cache\r\n"
+            "Connection: keep-alive\r\n"
+            "X-Accel-Buffering: no\r\n"
+            "\r\n"
+        )
+        writer.write(headers.encode("ascii"))
+        await writer.drain()
+        q = self.events.subscribe()
+        try:
+            writer.write(b": connected\n\n")
+            await writer.drain()
+            while True:
+                try:
+                    event_type, data = await asyncio.wait_for(q.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    writer.write(b": ping\n\n")
+                    await writer.drain()
+                    continue
+                payload = json.dumps(data, ensure_ascii=False)
+                writer.write(f"event: {event_type}\ndata: {payload}\n\n".encode("utf-8"))
+                await writer.drain()
+        except (ConnectionError, BrokenPipeError, asyncio.CancelledError):
+            pass
+        finally:
+            self.events.unsubscribe(q)

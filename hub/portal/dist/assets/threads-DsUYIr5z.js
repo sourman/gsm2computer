@@ -1,0 +1,1 @@
+const t=[{peer:"+15550100",lastBody:"Copy. Downlink is brass-hot, no echo on the handset.",lastAt:"2026-09-09T20:20:00Z"}];export{t as default};

@@ -23,7 +23,7 @@ or `AWS-Virtual-Microphone`. TTS would otherwise loop back into the mic.
 - Display: GNOME/DCV `DISPLAY=:1`
 - CDP: `http://127.0.0.1:9222`
 - Env: `PULSE_SOURCE=phone_uplink.monitor PULSE_SINK=openclaw_bus`
-- URL: `https://ip-172-31-21-244.mining-ling.ts.net/chat/main`
+- URL: `https://hub.mining-ling.ts.net/chat/main` ([ADR 0007](../docs/adr/0007-hub-machine-name-and-https.md))
 
 On GSM/simulator WebSocket connect the hub starts Talk; on disconnect it
 stops Talk. If Talk/WebRTC is not up, the hub **fails the call handshake**.
@@ -52,6 +52,47 @@ when navigating. Do not put that token in git or systemd unit files.
 | `webrtc-ui` (default, also legacy `1`/`true`) | Control UI Talk |
 | `relay` | Legacy `OpenClawTalkBridge` / `talk.session.create` |
 | `off` / `0` | No OpenClaw; PipeWire gsm_bus only |
+
+### Stuck-call watchdog
+
+The GSM WebSocket claims the one-live-call slot (`live_call`, ADR 0004) before
+the 101 upgrade and releases it in that handler's `finally`. If the Pixel socket
+stays half-open, later dials get HTTP 409 until the hub process restarts.
+
+After `session.updated`, a watchdog aborts the live handler (close WS → existing
+cleanup of PipeWire helpers, Talk, taps → then release the lock). It does not
+clear the lock while orphans are still running.
+
+| Env | Default | 0 means |
+|---|---|---|
+| `GSM2COMPUTER_CALL_WATCHDOG` | `1` | `0`/`off` disables all checks |
+| `GSM2COMPUTER_CALL_WS_IDLE_S` | `60` | no inbound WS frames (incl. ping/pong) |
+| `GSM2COMPUTER_CALL_UPLINK_IDLE_S` | `120` | no `input_audio_buffer.append` |
+| `GSM2COMPUTER_CALL_UPLINK_GRACE_S` | `45` | wait this long after `session.updated` before requiring uplink |
+| `GSM2COMPUTER_CALL_MAX_S` | `2700` (45 min) | hard cap from slot claim; disable with `0` |
+| `GSM2COMPUTER_CALL_PING_S` | `20` | hub-initiated WS ping after the call is established |
+
+`GET /health` includes `call` (`busy`, `age_s`, `last_ws_s`, `last_uplink_s`).
+
+### Outbound alert webhook (optional)
+
+Stuck-call watchdog aborts POST a Grok Bot webhook when both env vars are set.
+Unset `GSM2COMPUTER_ALERT_WEBHOOK_URL` is a silent skip. This is **not** the
+Pixel SMS outbox (`/sms/outbox`).
+
+| Env | Default | Notes |
+|---|---|---|
+| `GSM2COMPUTER_ALERT_WEBHOOK_URL` | unset | Public HTTPS webhook URL. Empty = no-op |
+| `GSM2COMPUTER_ALERT_WEBHOOK_KEY` | unset | Sender key; sent as `Authorization: Bearer <key>` |
+
+Cup (file-copy deploy) — systemd user drop-in, then reload:
+
+```
+~/.config/systemd/user/gsm2computer-hub.service.d/alert-webhook.conf
+```
+
+Example: [docs/alert-webhook.conf.example](../docs/alert-webhook.conf.example).
+`systemctl --user daemon-reload && systemctl --user restart gsm2computer-hub`
 
 ## Commands
 

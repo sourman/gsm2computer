@@ -1,0 +1,1 @@
+const a=[{id:"call-mock-1",direction:"in",number:"+15550100",started_at:"2026-09-09T20:22:00Z",duration_sec:126,switchboard_mode:"openclaw",session_id:"tap-mock-1"}];export{a as default};

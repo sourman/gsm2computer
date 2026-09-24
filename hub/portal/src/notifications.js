@@ -88,10 +88,13 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
+let notifyBound = false;
+
 export function bindNotifyControls({ onPermission } = {}) {
-  const btn = document.getElementById("notify-btn");
-  const hint = document.getElementById("notify-hint");
   const paint = () => {
+    const btn = document.getElementById("notify-btn");
+    const hint = document.getElementById("notify-hint");
+    if (!btn || !hint) return;
     const secure = osNotificationsAvailable();
     const permission = secure ? Notification.permission : "denied";
     if (!secure) {
@@ -116,15 +119,21 @@ export function bindNotifyControls({ onPermission } = {}) {
     btn.textContent = "Enable desk alerts";
   };
   paint();
-  if (btn) {
-    btn.addEventListener("click", async () => {
+  if (!notifyBound) {
+    notifyBound = true;
+    document.addEventListener("click", async (ev) => {
+      const btn = ev.target.closest("#notify-btn");
+      if (!btn) return;
+      const hint = document.getElementById("notify-hint");
       try {
         const permission = await requestOsPermission();
         paint();
         if (onPermission) onPermission(permission);
       } catch (err) {
-        hint.hidden = false;
-        hint.textContent = err.message || String(err);
+        if (hint) {
+          hint.hidden = false;
+          hint.textContent = err.message || String(err);
+        }
       }
     });
   }

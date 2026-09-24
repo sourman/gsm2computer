@@ -16,11 +16,20 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, Tuple
-from urllib.parse import parse_qs, urlsplit
 
-from call_tap import CallTap
-from portal_http import dispatch_portal
-from portal_store import get_bus, get_store
+from alert_webhook import post_system_alert
+from call_slot import (
+    CallSlot,
+    CallWatchdogConfig,
+    admin_release_allowed,
+    ensure_released_after_abort,
+    wait_or_abort,
+)
+from urllib.parse import parse_qs, urlsplit
+from call_tap import RECORD_DIR, CallTap
+from portal_http import EventBus, PortalApp
+from portal_sms import ingest_inbound_sms
+from portal_store import PortalStore
 from pipewire_target import (
     PipewireLinkError,
     pipewire_stream_env,
@@ -69,14 +78,18 @@ ULAW_FORMATS = {"audio/pcmu", "audio/g711-ulaw", "pcmu", "g711_ulaw"}
 ULAW_BIAS = 0x84
 TTS_ENERGY_WATCHDOG_S = float(os.environ.get("GSM2COMPUTER_TTS_ENERGY_WATCHDOG", "2.5"))
 TTS_WATCHDOG_LOUD_FRAMES = int(os.environ.get("GSM2COMPUTER_TTS_WATCHDOG_LOUD_FRAMES", "8"))
+TALK_ROLLOVER_S = float(os.environ.get("GSM2COMPUTER_TALK_ROLLOVER_S", "1500"))
+CALL_WATCHDOG = CallWatchdogConfig.from_env()
 
 LOG = logging.getLogger("gsm2computer-hub")
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 current_mode: Optional[str] = None
+WS_SEND_TIMEOUT_S = float(os.environ.get("GSM2COMPUTER_WS_SEND_TIMEOUT_S", "5"))
 active_bridge: Optional["PipewireBridge"] = None
+active_ws_writer: Optional[asyncio.StreamWriter] = None
 active_openclaw: Optional[Any] = None
-call_busy = False
+live_call = CallSlot(CALL_WATCHDOG)
 last_call_tap: Optional[dict[str, Any]] = None
 
 try:
@@ -92,20 +105,16 @@ except ImportError:
     get_talk_ui = None  # type: ignore[misc, assignment]
 
 
-def split_request_target(target: str) -> tuple[str, dict[str, str]]:
-    parts = urlsplit(target)
-    query = {k: v[-1] for k, v in parse_qs(parts.query, keep_blank_values=True).items()}
-    return parts.path or "/", query
-
-
-def json_response(status: int, body: Any, extra_headers: Optional[dict] = None) -> bytes:
+def json_response(status: int, body: dict, extra_headers: Optional[dict] = None) -> bytes:
     payload = json.dumps(body).encode("utf-8")
     status_text = {
         200: "OK",
+        201: "Created",
         400: "Bad Request",
         404: "Not Found",
         409: "Conflict",
         500: "Internal Server Error",
+        503: "Service Unavailable",
     }.get(status, "")
     lines = [
         f"HTTP/1.1 {status} {status_text}".rstrip(),
@@ -170,14 +179,23 @@ async def ws_send_text(writer: asyncio.StreamWriter, text: str) -> None:
     else:
         header = bytes([0x81, 127]) + length.to_bytes(8, "big")
     writer.write(header + data)
-    await writer.drain()
+    await asyncio.wait_for(writer.drain(), timeout=WS_SEND_TIMEOUT_S)
 
 
 async def ws_send_pong(writer: asyncio.StreamWriter, payload: bytes = b"") -> None:
     length = len(payload)
     header = bytes([0x8A, length])
     writer.write(header + payload)
-    await writer.drain()
+    await asyncio.wait_for(writer.drain(), timeout=WS_SEND_TIMEOUT_S)
+
+
+async def ws_send_ping(writer: asyncio.StreamWriter, payload: bytes = b"hub") -> None:
+    length = len(payload)
+    if length > 125:
+        raise ValueError("ping payload too long")
+    header = bytes([0x89, length])
+    writer.write(header + payload)
+    await asyncio.wait_for(writer.drain(), timeout=WS_SEND_TIMEOUT_S)
 
 
 async def ws_read_frame(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> Optional[str]:
@@ -203,6 +221,8 @@ async def ws_read_frame(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
     if opcode == 0x9:
         await ws_send_pong(writer, payload)
         return ""
+    if opcode == 0xA:
+        return ""
     if opcode == 0x1:
         return payload.decode("utf-8", errors="replace")
     return ""
@@ -211,7 +231,7 @@ async def ws_read_frame(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
 async def ws_send_close(writer: asyncio.StreamWriter, code: int, reason: str) -> None:
     payload = code.to_bytes(2, "big") + reason.encode("utf-8")[:120]
     writer.write(bytes([0x88, len(payload)]) + payload)
-    await writer.drain()
+    await asyncio.wait_for(writer.drain(), timeout=WS_SEND_TIMEOUT_S)
 
 
 async def fail_call_handshake(writer: asyncio.StreamWriter, message: str) -> None:
@@ -380,30 +400,49 @@ def _resample_pcm(pcm: bytes, src_rate: int, dst_rate: int, state: Any) -> Tuple
     return converted, new_state
 
 
-def parse_sms_command(body: str) -> Optional[str]:
-    text = (body or "").strip()
-    if not text:
-        return None
-    upper = text.upper()
-    if upper == "STATUS":
-        return "status"
-    match = re.match(r"^MODE\s+(\S+)", upper)
-    if match:
-        return match.group(1).lower()
-    return None
+PORTAL_DB = Path(os.environ.get("GSM2COMPUTER_PORTAL_DB", str(HUB_DIR / "portal.sqlite")))
+portal_store = PortalStore(PORTAL_DB)
+portal_events = EventBus()
+
+
+def _portal_mode() -> Optional[str]:
+    return current_mode
+
+
+def _portal_tap() -> Optional[dict[str, Any]]:
+    return last_call_tap
+
+
+portal_app = PortalApp(
+    store=portal_store,
+    events=portal_events,
+    dist_dir=HUB_DIR / "portal" / "dist",
+    mode_getter=_portal_mode,
+    tap_getter=_portal_tap,
+    record_dir=RECORD_DIR,
+)
 
 
 class PipewireBridge:
-    def __init__(self, sink: str, monitor: str, rate: int, tap: Optional[CallTap] = None) -> None:
+    def __init__(
+        self,
+        sink: str,
+        monitor: str,
+        rate: int,
+        tap: Optional[CallTap] = None,
+        on_abort: Optional[Any] = None,
+    ) -> None:
         self.sink = sink
         self.monitor = monitor
         self.rate = rate
         self.tap = tap
+        self._on_abort = on_abort
         self._playback: Optional[asyncio.subprocess.Process] = None
         self._record: Optional[asyncio.subprocess.Process] = None
         self._record_task: Optional[asyncio.Task] = None
         self._helper_tasks: list[asyncio.Task] = []
         self._closed = False
+        self._abort = asyncio.Event()
         self.downlink_energy_ticks = 0
         self.playback_linked = False
         self.record_linked = False
@@ -437,11 +476,22 @@ class PipewireBridge:
             if not self._closed:
                 LOG.warning("%s stderr reader ended: %s", label, exc)
 
+    def _signal_abort(self, reason: str) -> None:
+        if self._closed:
+            return
+        self._abort.set()
+        if self._on_abort is not None:
+            self._on_abort(reason)
+
     async def _watch_helper_exit(self, proc: asyncio.subprocess.Process, label: str) -> None:
         rc = await proc.wait()
         if self._closed:
             return
-        LOG.error("%s exited early rc=%s", label, rc)
+        LOG.error("%s exited early rc=%s; ending call", label, rc)
+        self._signal_abort(f"{label} exited early rc={rc}")
+
+    def aborted(self) -> bool:
+        return self._abort.is_set()
 
     async def start(
         self,
@@ -571,9 +621,11 @@ class PipewireBridge:
             try:
                 chunk = await self._record.stdout.readexactly(read_size)
             except asyncio.IncompleteReadError:
+                self._signal_abort("hub pw-record stdout ended")
                 break
             except Exception as exc:
                 LOG.warning("record read failed: %s", exc)
+                self._signal_abort(f"hub pw-record read failed: {exc}")
                 break
             left = audioop.tomono(chunk, 2, 1, 0)
             right = audioop.tomono(chunk, 2, 0, 1)
@@ -610,6 +662,18 @@ class PipewireBridge:
             }
             try:
                 await ws_send_text(ws_writer, json.dumps(event))
+            except asyncio.TimeoutError:
+                # Pixel not reading / Tailscale half-open: drain stalls, which
+                # also blocks ping/pong on the same StreamWriter and freezes
+                # last_ws → false "websocket idle" while the phone call lives.
+                LOG.error(
+                    "websocket downlink send stalled (>%ss); aborting call",
+                    WS_SEND_TIMEOUT_S,
+                )
+                self._signal_abort(
+                    f"websocket downlink send stalled (>{WS_SEND_TIMEOUT_S:.0f}s)"
+                )
+                break
             except (ConnectionError, BrokenPipeError, asyncio.IncompleteReadError):
                 break
         if self._record.returncode is None:
@@ -639,12 +703,14 @@ class PipewireBridge:
             return
         if proc.returncode is not None:
             LOG.error("gsm playback write skipped: pw-cat already exited rc=%s", proc.returncode)
+            self._signal_abort(f"hub pw-cat already exited rc={proc.returncode}")
             return
         try:
             proc.stdin.write(bus_pcm)
             await proc.stdin.drain()
         except (BrokenPipeError, ConnectionResetError, OSError) as exc:
             LOG.error("gsm playback write failed: %s (pw-cat rc=%s)", exc, proc.returncode)
+            self._signal_abort(f"hub pw-cat write failed: {exc}")
 
     def to_ulaw_8k(self, audio: bytes, fmt: str = "", rate: int = 0) -> bytes:
         """8 kHz μ-law for the legacy relay Talk path."""
@@ -690,6 +756,191 @@ class PipewireBridge:
                 pass
 
 
+async def _watch_live_call(
+    slot: CallSlot,
+    writer: asyncio.StreamWriter,
+    bridge: Optional[PipewireBridge],
+) -> None:
+    """Abort a half-open or idle GSM WebSocket so finally can release the lock."""
+    ping_every = slot.config.ping_s
+    last_ping = time.monotonic()
+    while slot.busy:
+        # Never return without aborting: a closed PipeWire bridge + half-dead GSM
+        # WebSocket previously left CallSlot.busy stuck for hours (wait_or_abort
+        # never woke, finally never released).
+        if bridge is not None and bridge._closed and not slot.abort.is_set():
+            slot.abort_call("pipewire bridge closed while call slot still held")
+        if not slot.abort.is_set():
+            await asyncio.sleep(1.0)
+        now = time.monotonic()
+        if (
+            not slot.abort.is_set()
+            and ping_every > 0
+            and slot.established_at is not None
+            and now - last_ping >= ping_every
+        ):
+            try:
+                await ws_send_ping(writer)
+            except (ConnectionError, BrokenPipeError, OSError) as exc:
+                slot.abort_call(f"websocket ping send failed: {exc}")
+            else:
+                last_ping = now
+        reason = slot.abort_reason or slot.check(now)
+        if not reason and not slot.abort.is_set():
+            continue
+        if reason:
+            slot.abort_call(reason)
+        else:
+            reason = slot.abort_reason or "call aborted"
+        LOG.error(
+            "call watchdog abort: %s cleared_lock=after_cleanup %s",
+            reason,
+            slot.snapshot(now),
+        )
+        post_system_alert(f"call watchdog abort: {reason}")
+        try:
+            await ws_send_close(writer, 1011, reason)
+        except (ConnectionError, BrokenPipeError, OSError) as exc:
+            LOG.warning("call watchdog could not send ws close: %s", exc)
+        try:
+            writer.close()
+        except Exception as exc:
+            LOG.warning("call watchdog could not close ws writer: %s", exc)
+        # finally may never run (dead GSM peer); do not await here — this task
+        # is cancelled from the WS finally. Schedule an independent ensure.
+        asyncio.create_task(
+            _ensure_call_slot_freed(slot, reason, wait_s=5.0),
+            name="call-slot-ensure-release",
+        )
+        return
+
+
+async def _clear_stale_active_bridge(
+    bridge_ref: Optional["PipewireBridge"] = None,
+    *,
+    stop_timeout_s: float = 5.0,
+) -> bool:
+    """Drop a stale active_bridge so new dials are not 409'd.
+
+    Clears the global *before* awaiting stop(), so a hung PipeWire/Talk stop
+    cannot leave the reject gate stuck after CallSlot is already free.
+    Returns True if a bridge reference was cleared.
+    """
+    global active_bridge
+    ref = bridge_ref if bridge_ref is not None else active_bridge
+    if ref is None:
+        return False
+    if active_bridge is ref:
+        active_bridge = None
+    try:
+        await asyncio.wait_for(ref.stop(), timeout=stop_timeout_s)
+    except Exception:
+        LOG.warning("stale active_bridge stop failed", exc_info=True)
+    return True
+
+
+async def _ensure_call_slot_freed(
+    slot: CallSlot,
+    reason: str,
+    *,
+    wait_s: float = 5.0,
+) -> None:
+    """After abort, force-release the same claim if the WS finally path never ran.
+
+    Always clears a stale active_bridge, even when busy is already false —
+    that is the ghost-reject path (reaper freed the slot; bridge ref lingered).
+    """
+    claimed_at = slot.claimed_at
+    bridge_ref = active_bridge
+    try:
+        if wait_s > 0:
+            await asyncio.sleep(wait_s)
+        if slot.busy and slot.claimed_at is not None and slot.claimed_at == claimed_at:
+            LOG.error(
+                "force-release CallSlot after abort wait: %s %s",
+                reason,
+                slot.snapshot(),
+            )
+            slot.release()
+            post_system_alert(f"call slot force-release after abort: {reason}")
+        cleared = await _clear_stale_active_bridge(bridge_ref)
+        if cleared:
+            LOG.error(
+                "cleared stale active_bridge after abort (%s) %s",
+                reason,
+                slot.snapshot(),
+            )
+    except Exception:
+        LOG.exception("ensure call slot freed failed")
+
+
+async def _watch_webrtc_ui_talk(openclaw: Any, bridge: "PipewireBridge") -> None:
+    """End the call if Control UI Talk dies while the gsm slot is still held."""
+    grace_s = 60.0
+    dead_threshold_s = 45.0
+    cdp_dead_threshold_s = 90.0
+    started = time.monotonic()
+    dead_since: Optional[float] = None
+    cdp_dead_since: Optional[float] = None
+    while not bridge._closed and not bridge.aborted():
+        await asyncio.sleep(15.0)
+        if time.monotonic() - started < grace_s:
+            continue
+        if not getattr(openclaw, "talk_active", False):
+            dead_since = None
+            cdp_dead_since = None
+            continue
+        healthy = await openclaw.talk_session_healthy()
+        if healthy is None:
+            if cdp_dead_since is None:
+                cdp_dead_since = time.monotonic()
+            elif time.monotonic() - cdp_dead_since >= cdp_dead_threshold_s:
+                LOG.error(
+                    "webrtc-ui CDP unavailable for %.0fs during call; ending call",
+                    cdp_dead_threshold_s,
+                )
+                bridge._signal_abort(
+                    f"webrtc-ui CDP unavailable for {cdp_dead_threshold_s:.0f}s"
+                )
+                return
+            continue
+        cdp_dead_since = None
+        if healthy:
+            dead_since = None
+            openclaw.webrtc_connected = True
+            continue
+        if dead_since is None:
+            dead_since = time.monotonic()
+        elif time.monotonic() - dead_since >= dead_threshold_s:
+            LOG.error(
+                "webrtc-ui talk unhealthy for %.0fs; ending call",
+                dead_threshold_s,
+            )
+            bridge._signal_abort(f"webrtc-ui talk unhealthy for {dead_threshold_s:.0f}s")
+            return
+
+
+async def _talk_rollover_watch(openclaw: Any, bridge: "PipewireBridge") -> None:
+    """Restart Control UI Talk before OpenAI/WebRTC session limits (~30 min)."""
+    while not openclaw._closed and getattr(openclaw, "talk_active", False):
+        started = getattr(openclaw, "talk_started_at", None)
+        if started is None:
+            await asyncio.sleep(1.0)
+            continue
+        remaining = TALK_ROLLOVER_S - (time.monotonic() - started)
+        if remaining > 0:
+            await asyncio.sleep(min(remaining, 30.0))
+            continue
+        if openclaw._closed or not getattr(openclaw, "talk_active", False):
+            return
+        try:
+            await openclaw.restart_talk()
+        except Exception as exc:
+            LOG.error("talk rollover failed: %s; ending call", exc)
+            bridge._signal_abort(f"talk rollover failed: {exc}")
+            return
+
+
 async def _watch_talk_frames_without_energy(
     openclaw: Any,
     bridge: PipewireBridge,
@@ -732,7 +983,7 @@ async def handle_websocket(
     headers: dict,
     path: str,
 ) -> None:
-    global active_bridge, active_openclaw, call_busy, last_call_tap
+    global active_bridge, active_openclaw, active_ws_writer, last_call_tap
 
     tap: Optional[CallTap] = None
     key = headers.get("sec-websocket-key")
@@ -741,16 +992,26 @@ async def handle_websocket(
         await writer.drain()
         return
 
-    if call_busy or active_bridge is not None:
-        LOG.warning("rejecting websocket: call already in progress")
+    if live_call.busy or active_bridge is not None:
+        LOG.warning(
+            "rejecting websocket: call already in progress %s",
+            live_call.snapshot(),
+        )
         writer.write(b"HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n")
         await writer.drain()
         return
 
-    call_busy = True
+    if not live_call.claim(path):
+        LOG.warning("rejecting websocket: call slot raced %s", live_call.snapshot())
+        writer.write(b"HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+        return
+
     playback_sink = GSM_SINK
     openclaw_bridge: Optional[Any] = None
     watchdog_task: Optional[asyncio.Task] = None
+    rollover_task: Optional[asyncio.Task] = None
+    call_watchdog_task: Optional[asyncio.Task] = None
     bridge: Optional[PipewireBridge] = None
     try:
         accept = ws_accept_key(key)
@@ -763,6 +1024,7 @@ async def handle_websocket(
         )
         writer.write(response.encode("ascii"))
         await writer.drain()
+        active_ws_writer = writer
 
         loopback = path.strip("/") == "loopback" or path.startswith("/loopback")
         LOG.info("WebSocket connected path=%s loopback=%s", path, loopback)
@@ -783,7 +1045,14 @@ async def handle_websocket(
             downlink_monitor = OPENCLAW_DOWNLINK_MONITOR
         else:
             downlink_monitor = GSM_MONITOR
-        bridge = PipewireBridge(playback_sink, GSM_MONITOR, BUS_RATE, tap=tap)
+        bridge = PipewireBridge(
+            playback_sink,
+            GSM_MONITOR,
+            BUS_RATE,
+            tap=tap,
+            on_abort=live_call.abort_call,
+        )
+        call_watchdog_task = asyncio.create_task(_watch_live_call(live_call, writer, bridge))
         if not loopback and OPENCLAW_TALK_MODE == "webrtc-ui":
             if OpenClawTalkUI is None or get_talk_ui is None:
                 await fail_call_handshake(writer, "OpenClaw Control UI Talk supervisor is not available")
@@ -858,16 +1127,34 @@ async def handle_websocket(
         }
         await ws_send_text(writer, json.dumps(session_ack))
         active_bridge = bridge
+        live_call.mark_established()
 
         if openclaw_bridge is not None and OPENCLAW_TALK_MODE == "relay":
             watchdog_task = asyncio.create_task(
                 _watch_talk_frames_without_energy(openclaw_bridge, bridge)
             )
+        elif openclaw_bridge is not None and OPENCLAW_TALK_MODE == "webrtc-ui":
+            watchdog_task = asyncio.create_task(_watch_webrtc_ui_talk(openclaw_bridge, bridge))
+            rollover_task = asyncio.create_task(_talk_rollover_watch(openclaw_bridge, bridge))
 
         while True:
-            msg = await ws_read_frame(reader, writer)
-            if msg is None:
+            if live_call.abort.is_set() or bridge.aborted():
+                LOG.error(
+                    "call aborted (%s); closing websocket %s",
+                    live_call.abort_reason or "pipewire abort",
+                    live_call.snapshot(),
+                )
                 break
+            msg = await wait_or_abort(ws_read_frame(reader, writer), live_call.abort)
+            if msg is None:
+                if live_call.abort_reason:
+                    LOG.error(
+                        "call watchdog ended websocket: %s %s",
+                        live_call.abort_reason,
+                        live_call.snapshot(),
+                    )
+                break
+            live_call.note_ws_activity()
             if not msg:
                 continue
             try:
@@ -889,6 +1176,7 @@ async def handle_websocket(
             elif etype == "input_audio_buffer.append":
                 audio_b64 = event.get("audio") or event.get("data") or ""
                 if audio_b64:
+                    live_call.note_uplink()
                     audio = base64.b64decode(audio_b64, validate=False)
                     fmt = event.get("format") or ""
                     rate = event.get("rate") or 0
@@ -912,67 +1200,119 @@ async def handle_websocket(
             else:
                 LOG.debug("ws event type=%s", etype)
     finally:
+        abort_reason = live_call.abort_reason
+        # Drop reject-gate refs first so a hung Talk/PipeWire stop cannot 409
+        # the next dial (ghost reject after reaper freed CallSlot).
+        if active_ws_writer is writer:
+            active_ws_writer = None
+        if active_bridge is bridge:
+            active_bridge = None
+        if call_watchdog_task:
+            call_watchdog_task.cancel()
+            try:
+                await call_watchdog_task
+            except asyncio.CancelledError:
+                pass
         if watchdog_task:
             watchdog_task.cancel()
             try:
                 await watchdog_task
             except asyncio.CancelledError:
                 pass
+        if rollover_task:
+            rollover_task.cancel()
+            try:
+                await rollover_task
+            except asyncio.CancelledError:
+                pass
         if bridge is not None:
-            await bridge.stop()
+            try:
+                await asyncio.wait_for(bridge.stop(), timeout=5.0)
+            except Exception:
+                LOG.warning("bridge stop in finally failed", exc_info=True)
         if tap is not None:
-            last_call_tap = await tap.close()
+            try:
+                await asyncio.wait_for(tap.stop_capture(), timeout=5.0)
+            except Exception:
+                LOG.warning("tap stop in finally failed", exc_info=True)
         if openclaw_bridge is not None:
-            await openclaw_bridge.stop()
+            try:
+                await asyncio.wait_for(openclaw_bridge.stop(), timeout=8.0)
+            except Exception:
+                LOG.warning("openclaw stop in finally failed", exc_info=True)
             active_openclaw = None
             LOG.info("openclaw talk stopped (mode=%s)", OPENCLAW_TALK_MODE)
-        active_bridge = None
-        call_busy = False
-        LOG.info("WebSocket disconnected")
+        live_call.release()
+        if abort_reason:
+            LOG.info("WebSocket disconnected after watchdog: %s", abort_reason)
+        else:
+            LOG.info("WebSocket disconnected")
+        if tap is not None:
+            try:
+                last_call_tap = await asyncio.wait_for(tap.close(), timeout=5.0)
+            except Exception:
+                LOG.warning("tap close in finally failed", exc_info=True)
+
+
+def _enable_tcp_keepalive(sock: socket.socket) -> None:
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    idle = getattr(socket, "TCP_KEEPIDLE", None)
+    interval = getattr(socket, "TCP_KEEPINTVL", None)
+    count = getattr(socket, "TCP_KEEPCNT", None)
+    if idle is not None:
+        sock.setsockopt(socket.IPPROTO_TCP, idle, 30)
+    if interval is not None:
+        sock.setsockopt(socket.IPPROTO_TCP, interval, 10)
+    if count is not None:
+        sock.setsockopt(socket.IPPROTO_TCP, count, 3)
 
 
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     sock = writer.get_extra_info("socket")
     if sock is not None:
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        try:
+            _enable_tcp_keepalive(sock)
+        except OSError as exc:
+            LOG.debug("tcp keepalive not set: %s", exc)
     peer = writer.get_extra_info("peername")
     try:
-        method, target, headers, body = await read_http_request(reader)
+        method, path, headers, body = await read_http_request(reader)
     except (ConnectionError, ValueError, asyncio.IncompleteReadError) as exc:
         LOG.debug("bad request from %s: %s", peer, exc)
         writer.close()
         await writer.wait_closed()
         return
 
-    path, query = split_request_target(target)
     LOG.debug("%s %s from %s", method, path, peer)
+    split = urlsplit(path)
+    path_only = split.path or "/"
+    query = parse_qs(split.query)
 
     if headers.get("upgrade", "").lower() == "websocket" or "sec-websocket-key" in headers:
-        await handle_websocket(reader, writer, headers, path)
+        await handle_websocket(reader, writer, headers, path_only)
         writer.close()
         await writer.wait_closed()
         return
 
     try:
-        if await dispatch_portal(method, path, query, headers, body, reader, writer):
+        portal_result = await portal_app.dispatch(method, path, headers, body, writer)
+        if portal_result == "stream":
+            writer.close()
+            await writer.wait_closed()
             return
-    except Exception:
-        LOG.exception("portal handler error for %s %s", method, path)
-        try:
-            writer.write(json_response(500, {"ok": False, "error": "internal error"}))
+        if portal_result == "handled":
             await writer.drain()
-        except Exception:
-            pass
-        writer.close()
-        await writer.wait_closed()
-        return
+            writer.close()
+            await writer.wait_closed()
+            return
 
-    try:
-        if method == "GET" and path == "/health":
+        if method == "GET" and path_only == "/health":
             body: dict[str, Any] = {
                 "ok": True,
                 "mode": current_mode,
                 "openclaw_talk": OPENCLAW_TALK_MODE,
+                "call": live_call.snapshot(),
             }
             if last_call_tap:
                 body["last_call_tap"] = last_call_tap
@@ -982,7 +1322,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 except Exception as exc:
                     body["talk"] = {"error": str(exc)}
             writer.write(json_response(200, body))
-        elif method == "POST" and path == "/token":
+        elif method == "POST" and path_only == "/token":
             expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
             writer.write(
                 json_response(
@@ -990,9 +1330,9 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     {"value": "hub-token", "model": "hub", "expires_at": expires},
                 )
             )
-        elif method == "GET" and path == "/switchboard/state":
+        elif method == "GET" and path_only == "/switchboard/state":
             writer.write(json_response(200, await switchboard_state()))
-        elif method == "POST" and path == "/switchboard/mode":
+        elif method == "POST" and path_only == "/switchboard/mode":
             try:
                 payload = json.loads(body.decode("utf-8") if body else "{}")
             except json.JSONDecodeError:
@@ -1006,34 +1346,91 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 writer.write(json_response(400, {"ok": False, "error": "mode required"}))
             else:
                 writer.write(json_response(200, await set_switchboard_mode(mode)))
-        elif method == "POST" and path == "/sms":
+        elif method == "POST" and path_only == "/sms":
             try:
                 payload = json.loads(body.decode("utf-8") if body else "{}")
             except json.JSONDecodeError:
                 payload = {"raw": body.decode("utf-8", errors="replace")}
-            log_entry = {
-                "from": payload.get("from"),
-                "body": payload.get("body"),
-                "receivedAt": payload.get("receivedAt")
-                or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            }
+            log_entry, command = ingest_inbound_sms(portal_store, portal_events, payload)
             LOG.info("sms %s", json.dumps(log_entry, ensure_ascii=False))
             try:
-                rec = get_store().persist_inbound(
+                from portal_sms import should_wake_cup, format_ops_sms_alert
+                if should_wake_cup(
                     str(log_entry.get("from") or ""),
-                    str(payload.get("body") or ""),
-                    str(log_entry["receivedAt"]),
-                )
-                if rec:
-                    get_bus().publish(rec)
+                    str(log_entry.get("body") or ""),
+                ):
+                    post_system_alert(
+                        format_ops_sms_alert(
+                            str(log_entry.get("from") or ""),
+                            str(log_entry.get("body") or ""),
+                            str(log_entry.get("receivedAt") or ""),
+                        )
+                    )
             except Exception:
-                LOG.exception("portal persist inbound sms failed")
-            command = parse_sms_command(str(payload.get("body") or ""))
+                LOG.warning("ops SMS alert webhook failed", exc_info=True)
             if command:
                 result = await set_switchboard_mode(command)
                 writer.write(json_response(200, {"ok": True, "sms": log_entry, "routing": result}))
             else:
                 writer.write(json_response(200, {"ok": True, "sms": log_entry}))
+        elif method == "POST" and path_only == "/admin/call/release":
+            # Emergency CallSlot / stale-bridge release.
+            # Refuse while a live call has fresh ws/uplink unless force=1 —
+            # a triage probe cut a healthy call tonight.
+            # Always clear stale active_bridge even when busy=false (ghost reject).
+            snap = live_call.snapshot()
+            force = (query.get("force") or ["0"])[0].lower() in ("1", "true", "yes")
+            allowed, deny_reason = admin_release_allowed(snap, force=force)
+            if not allowed:
+                LOG.warning(
+                    "admin call/release refused (live call): %s %s",
+                    deny_reason,
+                    snap,
+                )
+                writer.write(
+                    json_response(
+                        409,
+                        {
+                            "ok": False,
+                            "error": deny_reason,
+                            "call": snap,
+                            "hint": "POST /admin/call/release?force=1 to override",
+                        },
+                    )
+                )
+            else:
+                bridge_ref = active_bridge
+                forced = False
+                if live_call.busy:
+                    forced = await ensure_released_after_abort(
+                        live_call, "admin force-release", wait_s=5.0
+                    )
+                cleared = await _clear_stale_active_bridge(bridge_ref)
+                post_system_alert(
+                    f"admin force-release CallSlot (was busy={snap.get('busy')} "
+                    f"age_s={snap.get('age_s')} forced={forced} bridge_cleared={cleared} "
+                    f"force={force})"
+                )
+                LOG.error(
+                    "admin force-release CallSlot forced=%s bridge_cleared=%s %s -> %s",
+                    forced,
+                    cleared,
+                    snap,
+                    live_call.snapshot(),
+                )
+                writer.write(
+                    json_response(
+                        200,
+                        {
+                            "ok": True,
+                            "call": live_call.snapshot(),
+                            "before": snap,
+                            "forced": forced,
+                            "bridge_cleared": cleared,
+                            "force": force,
+                        },
+                    )
+                )
         else:
             writer.write(json_response(404, {"ok": False, "error": "not found"}))
     except Exception:
@@ -1043,6 +1440,52 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
     await writer.drain()
     writer.close()
     await writer.wait_closed()
+
+
+
+async def _reap_stuck_call_slot() -> None:
+    """Last-resort: force-release CallSlot if max duration exceeded and handler wedged."""
+    global active_openclaw
+    while True:
+        await asyncio.sleep(30.0)
+        try:
+            if not live_call.busy:
+                continue
+            now = time.monotonic()
+            reason = live_call.check(now)
+            if not reason:
+                continue
+            snap = live_call.snapshot(now)
+            LOG.error("call slot reaper force-release: %s %s", reason, snap)
+            bridge_ref = active_bridge
+            openclaw_ref = active_openclaw
+            forced = await ensure_released_after_abort(live_call, reason, wait_s=5.0)
+            # Reaper previously freed CallSlot but left active_bridge set → ghost
+            # "call already in progress" with /health busy=false. Always clear.
+            cleared = await _clear_stale_active_bridge(bridge_ref)
+            talk_stopped = False
+            if openclaw_ref is not None and active_openclaw is openclaw_ref:
+                active_openclaw = None
+                try:
+                    await asyncio.wait_for(openclaw_ref.stop(), timeout=8.0)
+                    talk_stopped = True
+                except Exception:
+                    LOG.warning("reaper openclaw stop failed", exc_info=True)
+            if forced or cleared or talk_stopped:
+                post_system_alert(
+                    f"call slot reaper force-release: {reason} "
+                    f"(forced={forced} bridge_cleared={cleared} talk_stopped={talk_stopped})"
+                )
+                LOG.error(
+                    "call slot reaper released lock after abort wait "
+                    "forced=%s bridge_cleared=%s talk_stopped=%s %s",
+                    forced,
+                    cleared,
+                    talk_stopped,
+                    live_call.snapshot(),
+                )
+        except Exception:
+            LOG.exception("call slot reaper error")
 
 
 async def main() -> None:
@@ -1055,13 +1498,18 @@ async def main() -> None:
         loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown()))
 
     server = await asyncio.start_server(handle_client, HOST, PORT)
+    asyncio.create_task(_reap_stuck_call_slot())
     addrs = ", ".join(str(sock.getsockname()) for sock in server.sockets or [])
     LOG.info(
-        "listening on %s (sink=%s auto_mode=%s openclaw_talk=%s)",
+        "listening on %s (sink=%s auto_mode=%s openclaw_talk=%s "
+        "call_watchdog=ws_idle=%s uplink_idle=%s max=%s)",
         addrs,
         GSM_SINK,
         AUTO_MODE_ON_CALL or "off",
         OPENCLAW_TALK_MODE,
+        CALL_WATCHDOG.ws_idle_s,
+        CALL_WATCHDOG.uplink_idle_s,
+        CALL_WATCHDOG.max_s,
     )
     async with server:
         await server.serve_forever()
@@ -1071,15 +1519,35 @@ _server: Optional[asyncio.AbstractServer] = None
 
 
 async def shutdown() -> None:
-    global active_bridge, active_openclaw, call_busy
+    global active_bridge, active_openclaw, active_ws_writer
     LOG.info("shutting down")
-    if active_openclaw:
-        await active_openclaw.stop()
-        active_openclaw = None
-    if active_bridge:
-        await active_bridge.stop()
-        active_bridge = None
-    call_busy = False
+    live_call.abort_call("hub shutdown")
+    writer = active_ws_writer
+    active_ws_writer = None
+    if writer is not None:
+        try:
+            await asyncio.wait_for(ws_send_close(writer, 1001, "hub shutdown"), timeout=1.0)
+        except Exception:
+            pass
+        try:
+            writer.close()
+        except Exception:
+            pass
+    bridge_ref = active_bridge
+    active_bridge = None
+    openclaw = active_openclaw
+    active_openclaw = None
+    if openclaw is not None:
+        try:
+            await asyncio.wait_for(openclaw.stop(), timeout=5.0)
+        except Exception:
+            LOG.warning("shutdown openclaw stop failed", exc_info=True)
+    if bridge_ref is not None:
+        try:
+            await asyncio.wait_for(bridge_ref.stop(), timeout=5.0)
+        except Exception:
+            LOG.warning("shutdown bridge stop failed", exc_info=True)
+    live_call.release()
     raise SystemExit(0)
 
 

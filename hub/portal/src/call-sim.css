@@ -1,0 +1,211 @@
+.call-sim {
+  padding: 16px 18px 28px;
+}
+
+.call-sim .controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.call-sim input[type="url"] {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+}
+
+.call-sim .checkbox {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px;
+}
+
+.call-sim .call-path {
+  margin: 0 0 12px;
+  padding: 0;
+  border: none;
+}
+
+.call-sim .call-path legend {
+  font-size: 0.78rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.call-sim .segmented {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.call-sim .segment {
+  display: flex;
+  margin: 0;
+  cursor: pointer;
+}
+
+.call-sim .segment input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.call-sim .segment span {
+  display: block;
+  padding: 8px 14px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.call-sim .segment input:checked + span {
+  background: var(--accent);
+  color: #1a120c;
+}
+
+.call-sim .call-path-hint {
+  margin: 8px 0 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.call-sim .buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.call-sim #end-btn {
+  min-height: 44px;
+  min-width: 72px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elev);
+  color: var(--text);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.call-sim #end-btn:disabled,
+.call-sim #start-btn:disabled {
+  opacity: 0.45;
+}
+
+.call-sim .stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.call-sim .stats span {
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.call-sim .audio-meters h2,
+.call-sim .card > h2 {
+  margin: 0 0 10px;
+  font-size: 0.82rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.call-sim .audio-meters {
+  margin-bottom: 12px;
+}
+
+.call-sim .stereo-meter {
+  display: grid;
+  grid-template-columns: 8.5rem 1fr;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.call-sim .meter-channels {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.call-sim .meter-channel {
+  display: grid;
+  grid-template-columns: 1.1rem 1fr;
+  align-items: center;
+  gap: 6px;
+}
+
+.call-sim .channel-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-align: center;
+}
+
+.call-sim .meter-label {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.call-sim .meter-track {
+  height: 10px;
+  border-radius: 4px;
+  background: #0c0a08;
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.call-sim .meter-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--bay-brass-dim) 0%, var(--bay-brass) 70%, #ff8a8a 100%);
+}
+
+.call-sim .stereo-meter.meter-inactive {
+  opacity: 0.4;
+}
+
+.call-sim #log {
+  height: 16rem;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 12px;
+  background: #0c0a08;
+  border: 1px solid #2a3a2a;
+  border-radius: var(--radius-sm);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.72rem;
+  color: #9dffb0;
+  white-space: pre-wrap;
+}
+
+.call-sim .log-info {
+  color: #7ec8ff;
+}
+
+.call-sim .log-ok {
+  color: #7dffb0;
+}
+
+.call-sim .log-warn {
+  color: #f4c430;
+}
+
+.call-sim .log-err {
+  color: #ff8a8a;
+}

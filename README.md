@@ -24,7 +24,7 @@ The Android bridge:
 
 - Answers GSM calls as the default phone app
 - Captures caller audio via privileged `AudioRecord` (Magisk system priv-app)
-- Opens a μ-law WebSocket to the hub (Tailscale default `http://100.101.181.110:8787`)
+- Opens a μ-law WebSocket to the hub (Tailscale default `http://hub.mining-ling.ts.net:8787`)
 - Injects hub audio back into the GSM uplink
 - Forwards inbound SMS as JSON to `{hub}/sms` (phone does not parse commands)
 
@@ -41,7 +41,7 @@ Licensed under MIT — see `LICENSE`.
 - Rooted Android phone (Magisk) with an unlockable bootloader
 - SIM with voice service
 - Set as **default phone app**
-- Hub stream URL configured (Settings → hub control URL, or `scripts/configure-bridge.sh`). Default: `http://100.101.181.110:8787` on Tailscale.
+- Hub stream URL configured (Settings → hub control URL, or `scripts/configure-bridge.sh`). Default: `http://hub.mining-ling.ts.net:8787` on Tailscale.
 
 Tested device profiles from upstream: Pixel 7, Samsung S10e, Qualcomm generic, etc.
 
@@ -56,7 +56,7 @@ sudo ./setup.sh          # once: JDK + Android SDK
 Configure the hub URL on-device or via adb (defaults to the Tailscale hub):
 
 ```bash
-HUB_CONTROL_URL=http://100.101.181.110:8787 \
+HUB_CONTROL_URL=http://hub.mining-ling.ts.net:8787 \
   ./scripts/configure-bridge.sh --force -s <serial>
 ```
 
@@ -70,7 +70,7 @@ Inbound SMS is posted as `{from, body, receivedAt}` to `{HUB_CONTROL_URL}/sms`. 
 
 Manual test:
 
-1. Hub control URL set (default `http://100.101.181.110:8787`). Magisk grants `RECEIVE_SMS` on boot.
+1. Hub control URL set (default `http://hub.mining-ling.ts.net:8787`). Magisk grants `RECEIVE_SMS` on boot.
 2. Send an SMS to the gateway SIM (or emulator: `adb emu sms send +15551212 hello`).
 3. App log should show `SMS forwarded from …` or `SMS forward failed: …`.
 4. On the hub, confirm `POST /sms` received the JSON. Hub `/health` should already be up (SAF-15).

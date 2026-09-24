@@ -632,6 +632,7 @@ class MainActivity : AppCompatActivity(), GatewayHost {
             Manifest.permission.READ_CALL_LOG,
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.RECEIVE_SMS,
+            Manifest.permission.SEND_SMS,
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             perms.add(Manifest.permission.READ_PHONE_NUMBERS)

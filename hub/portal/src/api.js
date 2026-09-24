@@ -1,89 +1,102 @@
-import * as demo from "./demo.js";
+const env = import.meta.env || {};
+const HUB_ORIGIN = (env.VITE_HUB_ORIGIN || "").replace(/\/$/, "");
+const API = `${HUB_ORIGIN}/portal/api`;
 
-export function portalBase() {
-  const base = import.meta.env.BASE_URL || "/portal/";
-  return base.endsWith("/") ? base : `${base}/`;
-}
-
-export function apiUrl(path) {
-  return `${portalBase()}api/${String(path).replace(/^\//, "")}`;
-}
-
-export function isDemoMode() {
-  return new URLSearchParams(location.search).has("demo");
-}
-
-async function readJson(resp) {
-  const data = await resp.json();
+async function jsonGet(path) {
+  const resp = await fetch(path);
   if (!resp.ok) {
-    const err = new Error((data && data.error) || `HTTP ${resp.status}`);
-    err.status = resp.status;
-    throw err;
+    const text = await resp.text();
+    throw new Error(text || `HTTP ${resp.status}`);
   }
+  return resp.json();
+}
+
+async function fetchOrMock(url, mockLoader) {
+  try {
+    const data = await jsonGet(url);
+    return { data, mock: false };
+  } catch {
+    const mod = await mockLoader();
+    return { data: mod.default ?? mod, mock: true };
+  }
+}
+
+export async function getHealth() {
+  return fetchOrMock(`${HUB_ORIGIN}/health`, () => import("./mocks/health.json"));
+}
+
+export async function getUsage(health) {
+  const fromHealth = usageFromHealth(health);
+  if (fromHealth) return { data: fromHealth, mock: false };
+  const loaded = await import("./mocks/usage.json");
+  return { data: loaded.default, mock: true };
+}
+
+function usageFromHealth(health) {
+  if (!health || typeof health !== "object") return null;
+  if (health.usage && typeof health.usage === "object") return health.usage;
+  if (health.tokens && typeof health.tokens === "object") return health.tokens;
+  if (health.openclaw_tokens && typeof health.openclaw_tokens === "object") {
+    return health.openclaw_tokens;
+  }
+  return null;
+}
+
+export async function getThreads() {
+  const { data } = await fetchOrMock(`${API}/threads`, () => import("./mocks/threads.json"));
   return data;
 }
 
-export async function fetchThreads() {
-  if (isDemoMode()) {
-    return demo.demoFetchThreads();
+export async function getMessages(peer) {
+  try {
+    return await jsonGet(`${API}/messages?peer=${encodeURIComponent(peer)}`);
+  } catch {
+    const loaded = await import("./mocks/messages.json");
+    const all = loaded.default;
+    return all[peer] || [];
   }
-  const data = await readJson(await fetch(apiUrl("threads")));
-  return Array.isArray(data) ? data : data.threads || [];
 }
 
-export async function fetchMessages(peer) {
-  if (isDemoMode()) {
-    return demo.demoFetchMessages(peer);
-  }
-  const url = `${apiUrl("messages")}?peer=${encodeURIComponent(peer)}`;
-  const data = await readJson(await fetch(url));
-  return Array.isArray(data) ? data : data.messages || [];
+export async function getCalls() {
+  const { data, mock } = await fetchOrMock(`${API}/calls`, () => import("./mocks/calls.json"));
+  return { data, mock };
+}
+
+export function callRecordingUrl(callId) {
+  return `${API}/calls/${encodeURIComponent(callId)}/recording`;
 }
 
 export async function sendMessage(to, body) {
-  if (isDemoMode()) {
-    return demo.demoSendMessage(to, body);
-  }
-  const data = await readJson(
-    await fetch(apiUrl("messages/send"), {
+  try {
+    const resp = await fetch(`${API}/messages/send`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ to, body }),
-    }),
-  );
-  return data.message || data;
-}
-
-export async function fetchCalls() {
-  if (isDemoMode()) {
-    return demo.demoFetchCalls();
-  }
-  const data = await readJson(await fetch(apiUrl("calls")));
-  return Array.isArray(data) ? data : data.calls || [];
-}
-
-/**
- * Subscribe to hub SSE (`GET /portal/api/events`).
- * Default SSE event name is `message`; call records use `call`.
- */
-export function connectEvents(onEvent, { onError } = {}) {
-  if (isDemoMode()) {
-    return demo.demoConnectEvents(onEvent);
-  }
-  const source = new EventSource(apiUrl("events"));
-  const handle = (ev) => {
-    let payload;
-    try {
-      payload = JSON.parse(ev.data);
-    } catch {
-      return;
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(text || `HTTP ${resp.status}`);
     }
-    onEvent(payload, ev.type || payload.type || "message");
-  };
-  source.addEventListener("message", handle);
-  source.addEventListener("call", handle);
+    return resp.json();
+  } catch (err) {
+    if (HUB_ORIGIN) throw err;
+    return { ok: true, mock: true, to, body };
+  }
+}
+
+export function connectEvents(onEvent) {
+  const source = new EventSource(`${API}/events`);
+  for (const type of ["message", "call", "outbox"]) {
+    source.addEventListener(type, (ev) => {
+      try {
+        onEvent(type, JSON.parse(ev.data));
+      } catch (err) {
+        console.warn("sse parse", err);
+      }
+    });
+  }
   source.onerror = () => {
-    if (onError) onError();
+    /* browser reconnects when hub is up; silent when using mocks */
   };
-  return () => source.close();
+  return source;
 }

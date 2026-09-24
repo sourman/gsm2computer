@@ -1,0 +1,7 @@
+{
+  "mock": true,
+  "label": "OpenClaw tokens",
+  "used": null,
+  "limit": null,
+  "note": "Usage is not on GET /health yet. This is a local placeholder."
+}

@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Switchboard lamp">
-  <rect width="64" height="64" rx="14" fill="#1a1410"/>
-  <circle cx="32" cy="28" r="14" fill="#e8b84a"/>
-  <circle cx="32" cy="28" r="8" fill="#fff3c4"/>
-  <rect x="30" y="40" width="4" height="12" fill="#c4a574"/>
-  <rect x="22" y="52" width="20" height="4" rx="2" fill="#8a6a3a"/>
-</svg>

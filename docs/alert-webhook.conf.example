@@ -1,0 +1,12 @@
+# Optional Grok Bot webhook for hub system alerts (watchdog abort).
+# Copy to ~/.config/systemd/user/gsm2computer-hub.service.d/alert-webhook.conf
+# on cup, fill URL + key, then:
+#   systemctl --user daemon-reload
+#   systemctl --user restart gsm2computer-hub
+#
+# Leave URL empty (or omit this drop-in) to keep alerts disabled.
+# Do not commit real keys.
+
+[Service]
+Environment=GSM2COMPUTER_ALERT_WEBHOOK_URL=
+Environment=GSM2COMPUTER_ALERT_WEBHOOK_KEY=

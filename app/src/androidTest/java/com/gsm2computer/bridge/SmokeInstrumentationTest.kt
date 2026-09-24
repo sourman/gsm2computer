@@ -22,9 +22,9 @@ class SmokeInstrumentationTest {
 
     @Test
     fun defaultHubControlUrlIsTailscale() {
-        assertEquals("http://100.101.181.110:8787", BuildConfig.DEFAULT_HUB_CONTROL_URL)
+        assertEquals("http://hub.mining-ling.ts.net:8787", BuildConfig.DEFAULT_HUB_CONTROL_URL)
         assertEquals(
-            "ws://100.101.181.110:8787",
+            "ws://hub.mining-ling.ts.net:8787",
             HubEndpoints.webSocketUrl(BuildConfig.DEFAULT_HUB_CONTROL_URL),
         )
         assertTrue(HubEndpoints.smsUrl(BuildConfig.DEFAULT_HUB_CONTROL_URL).endsWith("/sms"))
