@@ -6,9 +6,9 @@ PartOf=pipewire.service
 
 [Service]
 Type=simple
-# phone_uplink.monitor is silent on current PipeWire; capture the sink instead
-# and expose Audio/Source openclaw_phone_mic for Talk Chromium getUserMedia.
-ExecStart=/usr/bin/pw-loopback -n openclaw_phone_mic -C phone_uplink -i stream.capture.sink=true node.name=openclaw_phone_mic_cap node.passive=true -o media.class=Audio/Source node.name=openclaw_phone_mic node.description=OpenClaw_Phone_Mic audio.position=[FL,FR]
+# phone_uplink.monitor is silent on current PipeWire (monitor.passthrough);
+# capture the sink itself and expose Audio/Source openclaw_phone_mic for Talk.
+ExecStart=%h/gsm2computer-hub/start-openclaw-phone-mic.sh
 Restart=on-failure
 RestartSec=2
 

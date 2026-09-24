@@ -41,8 +41,9 @@ ensure_openclaw_phone_mic() {
   # Fallback if unit not installed yet
   if ! pactl list sources short 2>/dev/null | awk '{print $2}' | grep -qx openclaw_phone_mic; then
     pw-loopback -n openclaw_phone_mic -C phone_uplink \
-      -i 'stream.capture.sink=true node.name=openclaw_phone_mic_cap node.passive=true' \
-      -o 'media.class=Audio/Source node.name=openclaw_phone_mic node.description=OpenClaw_Phone_Mic audio.position=[FL,FR]' \
+      -i stream.capture.sink=true \
+      -o media.class=Audio/Source \
+      >/tmp/openclaw-phone-mic-loopback.log 2>&1 &
       >/tmp/gsm2-openclaw-phone-mic.log 2>&1 &
     sleep 0.5
   fi

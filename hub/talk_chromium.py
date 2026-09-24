@@ -26,10 +26,18 @@ from pipewire_target import TOOL_TIMEOUT_S, _run_captured
 
 LOG = logging.getLogger("openclaw-talk-ui")
 
-CONTROL_UI_URL = os.environ.get(
-    "GSM2COMPUTER_TALK_UI_URL",
-    "https://hub.mining-ling.ts.net/chat/main",
-)
+# Cup is the live Talk host. Re-read env on every call so a process that
+# imported this module without GSM2COMPUTER_TALK_UI_URL cannot navigate to the
+# stale hub.mining-ling.ts.net default and wedge CDP against the wrong gateway.
+_DEFAULT_CONTROL_UI_URL = "https://hub-cup.mining-ling.ts.net/chat/main"
+
+
+def control_ui_url() -> str:
+    return os.environ.get("GSM2COMPUTER_TALK_UI_URL", _DEFAULT_CONTROL_UI_URL) or _DEFAULT_CONTROL_UI_URL
+
+
+# Back-compat alias for callers that still read the module constant.
+CONTROL_UI_URL = control_ui_url()
 CDP_PORT = int(os.environ.get("GSM2COMPUTER_TALK_CDP_PORT", "9222"))
 CDP_HOST = os.environ.get("GSM2COMPUTER_TALK_CDP_HOST", "127.0.0.1")
 USER_DATA_DIR = Path(
@@ -52,18 +60,22 @@ TALK_ROLLOVER_S = float(os.environ.get("GSM2COMPUTER_TALK_ROLLOVER_S", "1500"))
 
 HOOK_JS = r"""
 (() => {
-  if (window.__gsm2TalkHook) return "already";
-  window.__gsm2TalkPcs = [];
-  const Orig = window.RTCPeerConnection;
-  if (!Orig) return "no-rtc";
-  function Wrapped(...args) {
-    const pc = new Orig(...args);
-    window.__gsm2TalkPcs.push(pc);
-    return pc;
+  const HOOK_VER = 3;
+  // Always (re)apply mic/APM patches when version advances; only wrap PC once.
+  if (!window.__gsm2TalkPcs) window.__gsm2TalkPcs = [];
+  if (!window.__gsm2PcWrapped) {
+    const Orig = window.RTCPeerConnection;
+    if (!Orig) return "no-rtc";
+    function Wrapped(...args) {
+      const pc = new Orig(...args);
+      window.__gsm2TalkPcs.push(pc);
+      return pc;
+    }
+    Wrapped.prototype = Orig.prototype;
+    Object.setPrototypeOf(Wrapped, Orig);
+    window.RTCPeerConnection = Wrapped;
+    window.__gsm2PcWrapped = true;
   }
-  Wrapped.prototype = Orig.prototype;
-  Object.setPrototypeOf(Wrapped, Orig);
-  window.RTCPeerConnection = Wrapped;
   // Virtual null-sink mic (phone_uplink.monitor): WebRTC APM must stay OFF.
   // AGC drifts Pulse monitor volumes; NS/EC on telephony audio creates the
   // "stuck in a bottle" / underwater sound and attenuates speech (~8 dB seen
@@ -115,8 +127,11 @@ HOOK_JS = r"""
         c.audio = await forceAudio(c.audio);
         return origGum(c);
       };
+      const prev = window.__gsm2GumPatchVer;
       window.__gsm2GumPatchVer = GUM_VER;
       window.__gsm2GumPatched = true;
+      // Prior Talk sessions may still hold a silent deviceId=default track.
+      if (typeof prev === "number" && prev !== GUM_VER) window.__gsm2NeedsFreshGum = true;
     }
     // OpenClaw may tighten constraints after gUM; keep APM off.
     if (window.MediaStreamTrack && MediaStreamTrack.prototype.applyConstraints && !window.__gsm2ApplyPatched) {
@@ -133,7 +148,8 @@ HOOK_JS = r"""
     }
   } catch (e) {}
   window.__gsm2TalkHook = true;
-  return "hooked";
+  window.__gsm2TalkHookVer = HOOK_VER;
+  return "hooked-ver-" + HOOK_VER + "-gum-" + (window.__gsm2GumPatchVer || 0);
 })()
 """
 
@@ -315,7 +331,7 @@ def load_gateway_token() -> str:
 
 
 def control_ui_url_with_token() -> str:
-    base = CONTROL_UI_URL
+    base = control_ui_url()
     token = load_gateway_token()
     if "#token=" in base:
         return base
@@ -546,6 +562,30 @@ class OpenClawTalkUI:
         session = await self._connect_page()
         try:
             await session.evaluate(HOOK_JS)
+            hook_state = await session.evaluate(
+                "({gum:window.__gsm2GumPatchVer||0, fresh:!!window.__gsm2NeedsFreshGum})"
+            )
+            LOG.info("webrtc hook state: %s", hook_state)
+            if isinstance(hook_state, dict) and hook_state.get("fresh"):
+                LOG.warning(
+                    "Talk mic patch upgraded; reloading Control UI for openclaw_phone_mic"
+                )
+                await session.call("Page.reload", {"ignoreCache": True})
+                deadline = time.monotonic() + PAGE_TIMEOUT_S
+                last = None
+                while time.monotonic() < deadline:
+                    last = await session.evaluate(PAGE_STATE_JS)
+                    if isinstance(last, dict) and last.get("hasTalkButton"):
+                        break
+                    await asyncio.sleep(0.35)
+                else:
+                    raise TalkUiError(f"Control UI reload missing talk button: {last!r}")
+                await session.evaluate(
+                    "window.__gsm2NeedsFreshGum=false;window.__gsm2TalkHook=false;"
+                    "window.__gsm2PcWrapped=false;window.__gsm2GumPatchVer=0;"
+                    "window.__gsm2OrigGum=null;1"
+                )
+                await session.evaluate(HOOK_JS)
             clicked = await session.evaluate(CLICK_START_JS)
             LOG.info("talk click: %s", clicked)
             if not isinstance(clicked, dict):
@@ -707,19 +747,28 @@ class OpenClawTalkUI:
             "pulse_sink": OPENCLAW_BUS,
             "talk_active": self.talk_active,
             "webrtc_connected": self.webrtc_connected,
-            "url": CONTROL_UI_URL,
+            "url": control_ui_url(),
         }
         if not info["cdp"]:
             return info
+        # Never let a wedged CDP block /health (and thus e2e idle checks).
         try:
-            session = await self._connect_page()
-            try:
-                info["page"] = await session.evaluate(PAGE_STATE_JS)
-            finally:
-                await session.close()
+            info["page"] = await asyncio.wait_for(self._health_page_probe(), timeout=2.5)
+        except asyncio.TimeoutError:
+            info["error"] = "cdp probe timed out"
+            info["cdp_wedged"] = True
+            LOG.warning("talk health CDP probe timed out")
         except Exception as exc:
             info["error"] = str(exc)
         return info
+
+    async def _health_page_probe(self) -> dict[str, Any]:
+        session = await self._connect_page()
+        try:
+            page = await session.evaluate(PAGE_STATE_JS)
+            return page if isinstance(page, dict) else {"raw": page}
+        finally:
+            await session.close()
 
     async def ensure_browser(self) -> None:
         if cdp_available() and browser_pid() is not None:
@@ -728,7 +777,7 @@ class OpenClawTalkUI:
             LOG.warning("cdp port %s is up but talk chromium pid was not found", CDP_PORT)
             return
         env = chromium_launch_env()
-        url = CONTROL_UI_URL
+        url = control_ui_url()
         args = chromium_args(url)
         LOG.info(
             "launching talk chromium display=%s pulse_source=%s pulse_sink=%s profile=%s",
@@ -817,7 +866,7 @@ class OpenClawTalkUI:
         if isinstance(state, dict) and state.get("hasTalkButton"):
             return
         url = control_ui_url_with_token()
-        LOG.info("navigating talk chromium to Control UI %s", CONTROL_UI_URL)
+        LOG.info("navigating talk chromium to Control UI %s", control_ui_url())
         await session.call("Page.navigate", {"url": url})
         deadline = time.monotonic() + PAGE_TIMEOUT_S
         last = state if isinstance(state, dict) else {}
@@ -835,7 +884,7 @@ class OpenClawTalkUI:
                 )
         raise TalkUiError(
             "Control UI did not show the Talk button. Log in once via DCV: "
-            f"profile {USER_DATA_DIR} url={CONTROL_UI_URL} snippet={((last or {}).get('snippet') or '')[:180]!r}"
+            f"profile {USER_DATA_DIR} url={control_ui_url()} snippet={((last or {}).get('snippet') or '')[:180]!r}"
         )
 
     @staticmethod
@@ -913,6 +962,7 @@ class OpenClawTalkUI:
                 PHONE_UPLINK_MONITOR in sources
                 or PHONE_UPLINK_SINK in sources
                 or "openclaw_phone_mic" in sources
+                or "output.openclaw_phone_mic" in sources
                 or "openclaw_mic" in sources
             )
             playback_ok = OPENCLAW_BUS in sinks

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Launch dedicated Chromium for OpenClaw Control UI Talk.
-# Pulse: mic = phone_uplink.monitor, speaker = openclaw_bus (mix-minus).
+# Pulse: mic = openclaw_phone_mic (sink-capture of phone_uplink), speaker = openclaw_bus.
 set -euo pipefail
 
 PROFILE="${GSM2COMPUTER_TALK_USER_DATA_DIR:-$HOME/.config/chromium-openclaw-talk}"
 CDP_PORT="${GSM2COMPUTER_TALK_CDP_PORT:-9222}"
-URL="${GSM2COMPUTER_TALK_UI_URL:-https://hub.mining-ling.ts.net/chat/main}"
+URL="${GSM2COMPUTER_TALK_UI_URL:-https://hub-cup.mining-ling.ts.net/chat/main}"
 CHROMIUM_BIN="${GSM2COMPUTER_CHROMIUM_BIN:-chromium-browser}"
-PULSE_SOURCE="${GSM2COMPUTER_PHONE_UPLINK_MONITOR:-phone_uplink.monitor}"
+PULSE_SOURCE="${GSM2COMPUTER_TALK_PULSE_SOURCE:-${GSM2COMPUTER_PHONE_UPLINK_MONITOR:-output.openclaw_phone_mic}}"
 PULSE_SINK="${GSM2COMPUTER_OPENCLAW_BUS:-openclaw_bus}"
 
 detect_display() {
