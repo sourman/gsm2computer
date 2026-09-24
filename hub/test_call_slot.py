@@ -6,7 +6,7 @@ import asyncio
 import os
 import unittest
 
-from call_slot import CallSlot, CallWatchdogConfig
+from call_slot import CallSlot, CallWatchdogConfig, ensure_released_after_abort
 
 
 class FakeClock:
@@ -199,6 +199,67 @@ class CallWatchdogPolicyTests(unittest.TestCase):
         self.assertEqual(self.slot.abort_reason, "websocket idle 60s")
         self.slot.release()
         self.assertFalse(self.slot.busy)
+
+
+class EnsureReleasedAfterAbortTests(unittest.IsolatedAsyncioTestCase):
+    async def test_abort_with_bridge_still_referenced_clears_busy(self) -> None:
+        """Mirrors /admin/call/release when active_bridge is set and WS finally never runs."""
+        slot = CallSlot(CallWatchdogConfig(enabled=False), clock=FakeClock())
+        self.assertTrue(slot.claim("/"))
+        slot.mark_established()
+        # Stand-in for hub.active_bridge still pointing at a live PipewireBridge:
+        # abort alone must not clear the lock; ensure_released_after_abort must.
+        bridge_still_referenced = object()
+        self.assertIsNotNone(bridge_still_referenced)
+        slot.abort_call("admin force-release")
+        self.assertTrue(slot.busy)
+        self.assertTrue(slot.abort.is_set())
+        forced = await ensure_released_after_abort(
+            slot, "admin force-release", wait_s=0.05
+        )
+        # already aborted; second abort is a no-op for reason, but wait+release runs
+        self.assertTrue(forced)
+        self.assertFalse(slot.busy)
+        self.assertIsNone(slot.abort_reason)
+
+    async def test_ensure_released_force_clears_when_handler_wedged(self) -> None:
+        slot = CallSlot(CallWatchdogConfig(enabled=False), clock=FakeClock())
+        self.assertTrue(slot.claim("/"))
+        forced = await ensure_released_after_abort(
+            slot, "websocket ping send failed: Connection reset by peer", wait_s=0.05
+        )
+        self.assertTrue(forced)
+        self.assertFalse(slot.busy)
+
+    async def test_ensure_released_noop_if_finally_already_released(self) -> None:
+        slot = CallSlot(CallWatchdogConfig(enabled=False), clock=FakeClock())
+        self.assertTrue(slot.claim("/"))
+
+        async def handler_finally() -> None:
+            await asyncio.sleep(0.02)
+            slot.release()
+
+        task = asyncio.create_task(handler_finally())
+        forced = await ensure_released_after_abort(slot, "watchdog", wait_s=0.1)
+        await task
+        self.assertFalse(forced)
+        self.assertFalse(slot.busy)
+
+    async def test_ensure_released_does_not_clobber_newer_claim(self) -> None:
+        clock = FakeClock()
+        slot = CallSlot(CallWatchdogConfig(enabled=False), clock=clock)
+        self.assertTrue(slot.claim("/old"))
+        ensure = asyncio.create_task(
+            ensure_released_after_abort(slot, "stale", wait_s=0.15)
+        )
+        await asyncio.sleep(0.05)
+        slot.release()
+        clock.advance(1.0)  # new claim must get a distinct claimed_at
+        self.assertTrue(slot.claim("/new"))
+        forced = await ensure
+        self.assertFalse(forced)
+        self.assertTrue(slot.busy)
+        self.assertEqual(slot.path, "/new")
 
 
 class CallWatchdogConfigTests(unittest.TestCase):
