@@ -1,0 +1,20 @@
+[Unit]
+Description=gsm2computer phone call-end watcher (ADB → Grok Bot call_ended)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/gsm2computer-hub
+Environment=PYTHONPATH=%h/gsm2computer-hub
+Environment=GSM2COMPUTER_HUB_HTTP=http://100.119.126.42:8787
+Environment=GSM2COMPUTER_CALL_END_ADB=100.85.191.25:5555
+Environment=GSM2COMPUTER_CALL_END_POLL_S=2.5
+Environment=GSM2COMPUTER_CALL_END_MIN_S=5
+ExecStart=%h/gsm2computer-hub/.venv/bin/python %h/gsm2computer-hub/call_end_watch.py
+Restart=on-failure
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=default.target

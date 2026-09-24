@@ -9,7 +9,7 @@ import unittest
 import urllib.error
 from unittest.mock import patch
 
-from alert_webhook import KEY_ENV, URL_ENV, post_system_alert
+from alert_webhook import KEY_ENV, URL_ENV, post_alert_event, post_system_alert
 
 
 class _FakeResponse:
@@ -126,3 +126,43 @@ class TestE2EAlertSkip(unittest.TestCase):
         self.assertTrue(is_test_alert("x", e2e=True))
         self.assertFalse(is_test_alert("admin force-release path=/ age_s=40"))
 
+
+
+class TestAlertEvent(unittest.TestCase):
+    def setUp(self) -> None:
+        self._env = {URL_ENV: os.environ.get(URL_ENV), KEY_ENV: os.environ.get(KEY_ENV)}
+        os.environ.pop(URL_ENV, None)
+        os.environ.pop(KEY_ENV, None)
+
+    def tearDown(self) -> None:
+        for name, value in self._env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    def test_call_ended_posts_even_with_test_true(self) -> None:
+        os.environ[URL_ENV] = "https://example.test/webhook"
+        os.environ[KEY_ENV] = "crsr_test_key"
+        payload = {"event": "call_ended", "test": True, "duration_s": 42, "text": "call_ended TEST"}
+        with patch("alert_webhook.urllib.request.urlopen", return_value=_FakeResponse()) as urlopen:
+            post_alert_event(payload)
+        urlopen.assert_called_once()
+        body = json.loads(urlopen.call_args[0][0].data.decode("utf-8"))
+        self.assertEqual(body["event"], "call_ended")
+        self.assertTrue(body["test"])
+        self.assertEqual(body["duration_s"], 42)
+
+    def test_call_ended_not_swallowed_by_e2e_words_in_text(self) -> None:
+        """call_ended must wake Cup even if text accidentally mentions e2e."""
+        os.environ[URL_ENV] = "https://example.test/webhook"
+        payload = {"event": "call_ended", "test": False, "text": "call_ended (not an e2e-test path)"}
+        with patch("alert_webhook.urllib.request.urlopen", return_value=_FakeResponse()) as urlopen:
+            post_alert_event(payload)
+        urlopen.assert_called_once()
+
+    def test_other_e2e_event_skipped(self) -> None:
+        os.environ[URL_ENV] = "https://example.test/webhook"
+        with patch("alert_webhook.urllib.request.urlopen") as urlopen:
+            post_alert_event({"event": "other", "e2e": True, "text": "x"})
+        urlopen.assert_not_called()
