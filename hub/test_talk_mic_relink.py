@@ -15,11 +15,16 @@ from talk_chromium import (
 )
 
 
+# Shape observed on safwat-cup (PipeWire 1.4) during a live Talk call.
 LINKED_LISTING = """
-phone_uplink:playback_FL
+phone_uplink:monitor_FL
   |-> input.openclaw_phone_mic:input_FL
-phone_uplink:playback_FR
+phone_uplink:monitor_FR
   |-> input.openclaw_phone_mic:input_FR
+phone_uplink:playback_FL
+  |<- pw-cat:output_FL
+input.openclaw_phone_mic:input_FL
+  |<- phone_uplink:monitor_FL
 output.openclaw_phone_mic:capture_FL
   |-> Chromium:input_FL
 """
@@ -150,7 +155,7 @@ class RelinkDoesNotRestartUnitTests(unittest.IsolatedAsyncioTestCase):
                     return 0, UNLINKED_LISTING, ""
                 return 0, LINKED_LISTING, ""
             if args == ["pw-link", "-o"]:
-                return 0, "phone_uplink:playback_FL\nphone_uplink:playback_FR\n", ""
+                return 0, "phone_uplink:monitor_FL\nphone_uplink:monitor_FR\n", ""
             if args == ["pw-link", "-i"]:
                 return (
                     0,
@@ -158,12 +163,21 @@ class RelinkDoesNotRestartUnitTests(unittest.IsolatedAsyncioTestCase):
                     "",
                 )
             if args[0] == "pw-link" and len(args) == 3:
+                linked.append((args[1], args[2]))
                 return 0, "", ""
             raise AssertionError(args)
 
+        linked: list[tuple[str, str]] = []
         with patch("talk_chromium._run_captured", new=fake_run):
             ok = await relink_openclaw_phone_mic()
         self.assertTrue(ok)
+        # Real null-sink output ports are monitor_*; those must be linked.
+        self.assertIn(
+            ("phone_uplink:monitor_FL", "input.openclaw_phone_mic:input_FL"), linked
+        )
+        self.assertIn(
+            ("phone_uplink:monitor_FR", "input.openclaw_phone_mic:input_FR"), linked
+        )
 
 
 class StartTalkDoesNotReloadTests(unittest.TestCase):
@@ -186,6 +200,13 @@ class StartTalkDoesNotReloadTests(unittest.TestCase):
         self.assertGreater(talk_at, 0)
         self.assertGreater(bridge_at, 0)
         self.assertLess(talk_at, bridge_at)
+
+    def test_gum_upgrade_reload_does_not_rearm_fresh_flag(self) -> None:
+        import inspect
+        import talk_chromium
+
+        src = inspect.getsource(talk_chromium.OpenClawTalkUI._maybe_reload_for_gum_upgrade)
+        self.assertNotIn("__gsm2GumPatchVer=0", src)
 
     def test_start_audio_may_reload_only_on_gum_upgrade(self) -> None:
         import inspect

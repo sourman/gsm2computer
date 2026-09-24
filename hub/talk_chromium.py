@@ -54,6 +54,7 @@ PHONE_MIC_NODE = os.environ.get("GSM2COMPUTER_PHONE_MIC_NODE", "openclaw_phone_m
 PHONE_MIC_UNIT = os.environ.get(
     "GSM2COMPUTER_PHONE_MIC_UNIT", "gsm2computer-openclaw-phone-mic.service"
 )
+RELINK_SETTLE_S = float(os.environ.get("GSM2COMPUTER_PHONE_MIC_RELINK_SETTLE_S", "0.5"))
 OPENCLAW_BUS = os.environ.get("GSM2COMPUTER_OPENCLAW_BUS", "openclaw_bus")
 CHROMIUM_BIN = os.environ.get("GSM2COMPUTER_CHROMIUM_BIN", "chromium-browser")
 DISPLAY = os.environ.get("GSM2COMPUTER_TALK_DISPLAY", "")
@@ -657,13 +658,12 @@ async def relink_openclaw_phone_mic() -> bool:
     if rc_o == 0 and rc_i == 0:
         out_ports = [ln.strip() for ln in (outputs or "").splitlines() if ln.strip()]
         in_ports = [ln.strip() for ln in (inputs or "").splitlines() if ln.strip()]
-        uplink_outs = _pw_port_match(out_ports, PHONE_UPLINK_SINK, "playback")
-        if not uplink_outs:
-            uplink_outs = [
-                p
-                for p in _pw_port_match(out_ports, PHONE_UPLINK_SINK)
-                if "monitor" not in p.lower()
-            ]
+        # A null sink's only *output* ports are monitor_FL/FR. At graph level
+        # sink-capture links exactly those (the silent thing is the Pulse
+        # ``phone_uplink.monitor`` source, not these ports).
+        uplink_outs = [
+            p for p in out_ports if p.lower().startswith(f"{PHONE_UPLINK_SINK.lower()}:")
+        ]
         loopback_ins = [
             p
             for p in in_ports
@@ -818,6 +818,10 @@ class OpenClawTalkUI:
             # getUserMedia unlinks pw-loopback from phone_uplink. Re-link ports
             # while Chromium still holds the source — do not restart the unit.
             await relink_openclaw_phone_mic()
+            # gUM's unlink can land a beat after bind; verify once more and
+            # re-link in place (never a unit restart) if it dropped.
+            await asyncio.sleep(RELINK_SETTLE_S)
+            await relink_openclaw_phone_mic()
             LOG.info("control ui talk webrtc connected: %s", state.get("pcs"))
         finally:
             await session.close()
@@ -903,9 +907,11 @@ class OpenClawTalkUI:
             raise TalkUiError(f"Control UI reload missing talk button: {last!r}")
         await session.evaluate(
             "window.__gsm2NeedsFreshGum=false;window.__gsm2TalkHook=false;"
-            "window.__gsm2PcWrapped=false;window.__gsm2GumPatchVer=0;"
+            "window.__gsm2PcWrapped=false;window.__gsm2GumPatchVer=undefined;"
             "window.__gsm2OrigGum=null;1"
         )
+        # GumPatchVer must be undefined (not 0) here, or HOOK_JS sees a numeric
+        # "previous" version, re-sets __gsm2NeedsFreshGum and every call reloads.
         await session.evaluate(HOOK_JS)
 
     async def reload_control_ui(self) -> None:
