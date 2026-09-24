@@ -88,6 +88,18 @@ class TranscriptDedupTests(unittest.TestCase):
             self.assertNotIn("transcripts.push(String(j.transcript))", js)
         self.assertIn("responses:", e2e.DC_SNAP_JS)
 
+    def test_state_isolated_from_stale_v1_listeners(self) -> None:
+        # Talk Chromium outlives deploys: an older hook's DC listeners (closure
+        # over the v1 push) must not feed or break the v2 transcript state.
+        import inspect
+
+        self.assertIn("window.__gsm2E2Ev2 || {}", e2e.DC_SNAP_JS)
+        self.assertIn("window.__gsm2E2E = {types: [], transcripts: []", e2e.DC_HOOK_JS)
+        for js in (e2e.DC_HOOK_JS, inspect.getsource(e2e._attach_existing_dc)):
+            self.assertIn("__gsm2E2EAttachedV2", js)
+            self.assertIn("window.__gsm2E2Ev2Push = push", js)
+            self.assertNotIn("ch.__gsm2E2EAttached)", js)
+
 
 if __name__ == "__main__":
     unittest.main()

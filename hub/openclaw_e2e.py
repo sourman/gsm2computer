@@ -338,15 +338,18 @@ async def _cdp_page_ws() -> str:
 
 DC_HOOK_JS = r"""
 (() => {
-  window.__gsm2E2E = {types: [], byResp: {}, order: [], responseCreated: 0, forced: false};
+  // v2 state lives under a new global: listeners installed by an older hook in
+  // this long-lived page keep writing to the legacy sink below, not to v2.
+  window.__gsm2E2E = {types: [], transcripts: [], responseCreated: 0, forced: false};
+  window.__gsm2E2Ev2 = {types: [], byResp: {}, order: [], responseCreated: 0, forced: false};
   const push = (j) => {
     try {
       const t = j.type || "?";
-      window.__gsm2E2E.types.push(t);
-      if (t === "response.created") window.__gsm2E2E.responseCreated += 1;
+      window.__gsm2E2Ev2.types.push(t);
+      if (t === "response.created") window.__gsm2E2Ev2.responseCreated += 1;
       // One entry per response: deltas accumulate, .done replaces them
       // (pushing both double-counted every reply: "Hi Modi!Hi Modi!").
-      const E = window.__gsm2E2E;
+      const E = window.__gsm2E2Ev2;
       E.byResp = E.byResp || {};
       E.order = E.order || [];
       const key = String(j.response_id || j.item_id || "_");
@@ -360,17 +363,18 @@ DC_HOOK_JS = r"""
       }
     } catch (e) {}
   };
+  window.__gsm2E2Ev2Push = push;
   const attach = (ch) => {
-    if (!ch || ch.__gsm2E2EAttached) return;
-    ch.__gsm2E2EAttached = true;
-    window.__gsm2E2E.dc = ch;
+    if (!ch || ch.__gsm2E2EAttachedV2) return;
+    ch.__gsm2E2EAttachedV2 = true;
+    window.__gsm2E2Ev2.dc = ch;
     ch.addEventListener("message", (ev) => {
       if (typeof ev.data !== "string") return;
-      try { push(JSON.parse(ev.data)); } catch (e) {}
+      try { (window.__gsm2E2Ev2Push || push)(JSON.parse(ev.data)); } catch (e) {}
     });
   };
   const Orig = window.RTCPeerConnection;
-  if (!Orig || window.__gsm2E2EHooked) {
+  if (!Orig || window.__gsm2E2EHookedV2) {
     // still attach to any existing DC
     if (window.__gsm2Dc) attach(window.__gsm2Dc);
     return "already";
@@ -389,14 +393,14 @@ DC_HOOK_JS = r"""
   Wrapped.prototype = Orig.prototype;
   Object.setPrototypeOf(Wrapped, Orig);
   window.RTCPeerConnection = Wrapped;
-  window.__gsm2E2EHooked = true;
+  window.__gsm2E2EHookedV2 = true;
   return "hooked";
 })()
 """
 
 DC_SNAP_JS = r"""
 (() => {
-  const e = window.__gsm2E2E || {};
+  const e = window.__gsm2E2Ev2 || {};
   return {
     types: (e.types || []).slice(-80),
     transcript: (e.order || []).map((k) => (e.byResp || {})[k] || "").join(" | "),
@@ -416,15 +420,15 @@ async def _attach_existing_dc() -> None:
 
     js = r"""
 (() => {
-  if (!window.__gsm2E2E) return {ok:false, reason:"no-e2e-hook"};
+  if (!window.__gsm2E2Ev2) return {ok:false, reason:"no-e2e-hook"};
   const push = (j) => {
     try {
       const t = j.type || "?";
-      window.__gsm2E2E.types.push(t);
-      if (t === "response.created") window.__gsm2E2E.responseCreated += 1;
+      window.__gsm2E2Ev2.types.push(t);
+      if (t === "response.created") window.__gsm2E2Ev2.responseCreated += 1;
       // One entry per response: deltas accumulate, .done replaces them
       // (pushing both double-counted every reply: "Hi Modi!Hi Modi!").
-      const E = window.__gsm2E2E;
+      const E = window.__gsm2E2Ev2;
       E.byResp = E.byResp || {};
       E.order = E.order || [];
       const key = String(j.response_id || j.item_id || "_");
@@ -438,13 +442,14 @@ async def _attach_existing_dc() -> None:
       }
     } catch (e) {}
   };
+  window.__gsm2E2Ev2Push = push;
   const attach = (ch) => {
-    if (!ch || ch.__gsm2E2EAttached) return false;
-    ch.__gsm2E2EAttached = true;
-    window.__gsm2E2E.dc = ch;
+    if (!ch || ch.__gsm2E2EAttachedV2) return false;
+    ch.__gsm2E2EAttachedV2 = true;
+    window.__gsm2E2Ev2.dc = ch;
     ch.addEventListener("message", (ev) => {
       if (typeof ev.data !== "string") return;
-      try { push(JSON.parse(ev.data)); } catch (e) {}
+      try { (window.__gsm2E2Ev2Push || push)(JSON.parse(ev.data)); } catch (e) {}
     });
     return true;
   };
@@ -456,7 +461,7 @@ async def _attach_existing_dc() -> None:
   for (const pc of (window.__gsm2TalkPcs || [])) {
     pc.addEventListener("datachannel", (ev) => attach(ev.channel));
   }
-  return {ok:true, attached:n, hasDc:!!window.__gsm2E2E.dc};
+  return {ok:true, attached:n, hasDc:!!window.__gsm2E2Ev2.dc};
 })()
 """
     async with websockets.connect(ws_url, max_size=8_000_000, open_timeout=5) as ws:
