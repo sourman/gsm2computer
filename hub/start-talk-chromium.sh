@@ -60,5 +60,5 @@ exec "$CHROMIUM_BIN" \
   --hide-crash-restore-bubble \
   --disable-infobars \
   --ozone-platform=x11 \
-  --disable-features=WebRtcAllowInputVolumeAdjustment \
+  --disable-features=WebRtcAllowInputVolumeAdjustment,ChromeWideEchoCancellation \
   "$URL"
