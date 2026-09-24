@@ -50,6 +50,11 @@ PHONE_UPLINK_SINK = os.environ.get("GSM2COMPUTER_PHONE_UPLINK_SINK", "phone_upli
 PHONE_UPLINK_MONITOR = os.environ.get(
     "GSM2COMPUTER_PHONE_UPLINK_MONITOR", f"{PHONE_UPLINK_SINK}.monitor"
 )
+PHONE_MIC_NODE = os.environ.get("GSM2COMPUTER_PHONE_MIC_NODE", "openclaw_phone_mic")
+PHONE_MIC_UNIT = os.environ.get(
+    "GSM2COMPUTER_PHONE_MIC_UNIT", "gsm2computer-openclaw-phone-mic.service"
+)
+RELINK_SETTLE_S = float(os.environ.get("GSM2COMPUTER_PHONE_MIC_RELINK_SETTLE_S", "0.5"))
 OPENCLAW_BUS = os.environ.get("GSM2COMPUTER_OPENCLAW_BUS", "openclaw_bus")
 CHROMIUM_BIN = os.environ.get("GSM2COMPUTER_CHROMIUM_BIN", "chromium-browser")
 DISPLAY = os.environ.get("GSM2COMPUTER_TALK_DISPLAY", "")
@@ -543,13 +548,72 @@ class CdpSession:
 
 
 
-async def ensure_openclaw_phone_mic(*, force: bool = False) -> bool:
-    """Restart sink-capture virtual mic when inactive/missing (or force=True).
+def loopback_capture_linked(
+    listing: str,
+    *,
+    uplink: str = PHONE_UPLINK_SINK,
+    mic: str = PHONE_MIC_NODE,
+) -> bool:
+    """True when ``pw-link -l`` shows *uplink* feeding the loopback capture node.
 
-    Returns True if restarted. After a restart, Control UI must reload so
-    getUserMedia rebinds — stale tracks keep media-source energy at 0.
+    Chromium holds ``output.<mic>`` (Audio/Source). The capture side that
+    getUserMedia unlinks is ``input.<mic>``, which must stay on the sink itself
+    (sink-capture). ``phone_uplink.monitor`` is silent on this PipeWire.
     """
-    unit = "gsm2computer-openclaw-phone-mic.service"
+    uplink_l = (uplink or "").lower()
+    mic_l = (mic or "").lower()
+    if not uplink_l or not mic_l:
+        return False
+    current_src = ""
+    for raw in (listing or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if "|->" in line:
+            dst = line.split("|->", 1)[1].strip().lower()
+            src = current_src.lower()
+            if uplink_l in src and mic_l in dst and "output." not in dst:
+                return True
+            if mic_l in src and "output." not in src and uplink_l in dst:
+                return True
+            continue
+        current_src = line
+    return False
+
+
+def live_talk_blocks_reload(page_state: Any, *, talk_active: bool = False) -> bool:
+    """True when Control UI Talk is live — never Page.reload / stop_talk from heal."""
+    if talk_active:
+        return True
+    if not isinstance(page_state, dict):
+        return False
+    if page_state.get("live"):
+        return True
+    for pc in page_state.get("pcs") or []:
+        if not isinstance(pc, dict):
+            continue
+        if pc.get("connection") in ("connecting", "connected", "completed"):
+            return True
+        if pc.get("ice") in ("checking", "connected", "completed"):
+            return True
+    return False
+
+
+def _pw_port_match(ports: list[str], *needles: str) -> list[str]:
+    lowered = [(p, p.lower()) for p in ports]
+    return [p for p, low in lowered if all(n.lower() in low for n in needles)]
+
+
+async def ensure_openclaw_phone_mic(*, force: bool = False) -> bool:
+    """Start sink-capture virtual mic when inactive/missing.
+
+    Never pass ``force=True`` once Talk or phone uplink is live: restarting
+    the pw-loopback unit destroys the source node Chromium already holds and
+    cuts audio. After getUserMedia, use ``relink_openclaw_phone_mic`` instead.
+
+    Returns True if the unit was restarted.
+    """
+    unit = PHONE_MIC_UNIT
     need = force
     if not need:
         rc, out, _ = await _run_captured(["systemctl", "--user", "is-active", unit], 8.0, "systemctl")
@@ -558,7 +622,7 @@ async def ensure_openclaw_phone_mic(*, force: bool = False) -> bool:
         rc2, sources, _ = await _run_captured(
             ["pactl", "list", "sources", "short"], 5.0, "pactl sources"
         )
-        if "openclaw_phone_mic" not in (sources or ""):
+        if PHONE_MIC_NODE not in (sources or ""):
             need = True
     if need:
         LOG.warning("restarting %s (openclaw Talk mic)", unit)
@@ -566,6 +630,63 @@ async def ensure_openclaw_phone_mic(*, force: bool = False) -> bool:
         await asyncio.sleep(0.8)
         return True
     return False
+
+
+async def relink_openclaw_phone_mic() -> bool:
+    """Re-link pw-loopback capture to phone_uplink without restarting the unit.
+
+    getUserMedia on openclaw_phone_mic leaves capture ports idle. Restarting
+    the loopback while Chromium holds the source restores VAD, but destroys
+    the node and audibly cuts the live call. ``pw-link`` the sink to
+    ``input.openclaw_phone_mic`` in place so the MediaStreamTrack stays up.
+    """
+    rc_l, listing, _ = await _run_captured(["pw-link", "-l"], TOOL_TIMEOUT_S, "pw-link -l")
+    if rc_l == 0 and loopback_capture_linked(listing or ""):
+        LOG.info("openclaw_phone_mic capture already linked to %s", PHONE_UPLINK_SINK)
+        return True
+
+    capture_node = f"input.{PHONE_MIC_NODE}"
+    # Node-level link keeps sink-capture. Do not link *.monitor — it is silent.
+    for src, dst in (
+        (PHONE_UPLINK_SINK, capture_node),
+        (PHONE_UPLINK_SINK, PHONE_MIC_NODE),
+    ):
+        await _run_captured(["pw-link", src, dst], TOOL_TIMEOUT_S, f"pw-link {src} {dst}")
+
+    rc_o, outputs, _ = await _run_captured(["pw-link", "-o"], TOOL_TIMEOUT_S, "pw-link -o")
+    rc_i, inputs, _ = await _run_captured(["pw-link", "-i"], TOOL_TIMEOUT_S, "pw-link -i")
+    if rc_o == 0 and rc_i == 0:
+        out_ports = [ln.strip() for ln in (outputs or "").splitlines() if ln.strip()]
+        in_ports = [ln.strip() for ln in (inputs or "").splitlines() if ln.strip()]
+        # A null sink's only *output* ports are monitor_FL/FR. At graph level
+        # sink-capture links exactly those (the silent thing is the Pulse
+        # ``phone_uplink.monitor`` source, not these ports).
+        uplink_outs = [
+            p for p in out_ports if p.lower().startswith(f"{PHONE_UPLINK_SINK.lower()}:")
+        ]
+        loopback_ins = [
+            p
+            for p in in_ports
+            if PHONE_MIC_NODE.lower() in p.lower()
+            and "output." not in p.lower()
+            and "chromium" not in p.lower()
+        ]
+        preferred = [p for p in loopback_ins if "input." in p.lower()]
+        if preferred:
+            loopback_ins = preferred
+        for src, dst in _zip_stereo(uplink_outs, loopback_ins):
+            await _run_captured(["pw-link", src, dst], TOOL_TIMEOUT_S, f"pw-link {src} {dst}")
+
+    rc_l, listing, _ = await _run_captured(["pw-link", "-l"], TOOL_TIMEOUT_S, "pw-link -l")
+    ok = rc_l == 0 and loopback_capture_linked(listing or "")
+    if ok:
+        LOG.info("re-linked openclaw_phone_mic after Talk WebRTC bind")
+    else:
+        LOG.warning(
+            "openclaw_phone_mic capture re-link unverified (no unit restart): %s",
+            (listing or "")[:400],
+        )
+    return ok
 
 
 async def pin_phone_uplink_volume() -> None:
@@ -629,6 +750,7 @@ class OpenClawTalkUI:
             await self._ensure_control_ui(session)
             hook = await session.evaluate(HOOK_JS)
             LOG.info("webrtc hook: %s", hook)
+            await self._maybe_reload_for_gum_upgrade(session)
             state = await session.evaluate(PAGE_STATE_JS)
             self.last_state = state if isinstance(state, dict) else {}
             LOG.info(
@@ -649,39 +771,18 @@ class OpenClawTalkUI:
     async def start_talk(self, *, allow_already_active: bool = True) -> None:
         if self._closed:
             raise TalkUiError("talk ui is closed")
-        mic_restarted = await ensure_openclaw_phone_mic()
+        # Unit restart only if missing; never force-restart (that cuts the mic).
+        await ensure_openclaw_phone_mic()
         session = await self._connect_page()
         try:
             await session.evaluate(HOOK_JS)
-            # Always rebind mic: loopback links drop across calls while the unit
-            # stays "active", leaving WebRTC media-source energy at 0.
-            await session.evaluate("window.__gsm2NeedsFreshGum = true")
             hook_state = await session.evaluate(
                 "({gum:window.__gsm2GumPatchVer||0, fresh:!!window.__gsm2NeedsFreshGum})"
             )
             LOG.info("webrtc hook state: %s", hook_state)
-            if isinstance(hook_state, dict) and hook_state.get("fresh"):
-                LOG.warning(
-                    "Talk mic patch upgraded; reloading Control UI for openclaw_phone_mic"
-                )
-                await session.call("Page.reload", {"ignoreCache": True})
-                deadline = time.monotonic() + PAGE_TIMEOUT_S
-                last = None
-                while time.monotonic() < deadline:
-                    last = await session.evaluate(PAGE_STATE_JS)
-                    if isinstance(last, dict) and last.get("hasTalkButton"):
-                        break
-                    await asyncio.sleep(0.35)
-                else:
-                    raise TalkUiError(f"Control UI reload missing talk button: {last!r}")
-                await session.evaluate(
-                    "window.__gsm2NeedsFreshGum=false;window.__gsm2TalkHook=false;"
-                    "window.__gsm2PcWrapped=false;window.__gsm2GumPatchVer=0;"
-                    "window.__gsm2OrigGum=null;1"
-                )
-                await session.evaluate(HOOK_JS)
-                # Let sink-capture loopback finish linking before gUM/Talk.
-                await asyncio.sleep(1.0)
+            # Do not reload the Control UI page here. A GUM_VER bump reloads in
+            # start_audio (before the phone hears anything). Reloading after
+            # Talk/uplink is live is an audible cut and can wipe the e2e DC hook.
             clicked = await session.evaluate(CLICK_START_JS)
             LOG.info("talk click: %s", clicked)
             if not isinstance(clicked, dict):
@@ -714,13 +815,13 @@ class OpenClawTalkUI:
             self.webrtc_connected = True
             self.talk_started_at = time.monotonic()
             await self._bind_chromium_audio()
-            # Opening getUserMedia unlinks pw-loopback from phone_uplink (capture
-            # ports go idle). Restart the loopback *while* Chromium holds the
-            # source so sink-capture links reappear — otherwise media-source
-            # energy stays 0 and OpenClaw never VAD-triggers.
-            if await ensure_openclaw_phone_mic(force=True):
-                LOG.info("re-linked openclaw_phone_mic after Talk WebRTC bind")
-                await asyncio.sleep(0.6)
+            # getUserMedia unlinks pw-loopback from phone_uplink. Re-link ports
+            # while Chromium still holds the source — do not restart the unit.
+            await relink_openclaw_phone_mic()
+            # gUM's unlink can land a beat after bind; verify once more and
+            # re-link in place (never a unit restart) if it dropped.
+            await asyncio.sleep(RELINK_SETTLE_S)
+            await relink_openclaw_phone_mic()
             LOG.info("control ui talk webrtc connected: %s", state.get("pcs"))
         finally:
             await session.close()
@@ -776,11 +877,55 @@ class OpenClawTalkUI:
             await session.close()
 
 
+    async def _maybe_reload_for_gum_upgrade(self, session: "CdpSession") -> None:
+        """Page.reload only when the gUM patch version advanced, and never if Talk is live.
+
+        Must run from start_audio (before the phone uplink is pumping).
+        """
+        hook_state = await session.evaluate(
+            "({gum:window.__gsm2GumPatchVer||0, fresh:!!window.__gsm2NeedsFreshGum})"
+        )
+        if not (isinstance(hook_state, dict) and hook_state.get("fresh")):
+            return
+        page = await session.evaluate(PAGE_STATE_JS)
+        if live_talk_blocks_reload(page, talk_active=self.talk_active):
+            LOG.warning("skipping Control UI reload for gUM upgrade: Talk is live")
+            return
+        LOG.warning(
+            "Talk mic patch upgraded; reloading Control UI before call audio (%s)",
+            hook_state,
+        )
+        await session.call("Page.reload", {"ignoreCache": True})
+        deadline = time.monotonic() + PAGE_TIMEOUT_S
+        last = None
+        while time.monotonic() < deadline:
+            last = await session.evaluate(PAGE_STATE_JS)
+            if isinstance(last, dict) and last.get("hasTalkButton"):
+                break
+            await asyncio.sleep(0.35)
+        else:
+            raise TalkUiError(f"Control UI reload missing talk button: {last!r}")
+        await session.evaluate(
+            "window.__gsm2NeedsFreshGum=false;window.__gsm2TalkHook=false;"
+            "window.__gsm2PcWrapped=false;window.__gsm2GumPatchVer=undefined;"
+            "window.__gsm2OrigGum=null;1"
+        )
+        # GumPatchVer must be undefined (not 0) here, or HOOK_JS sees a numeric
+        # "previous" version, re-sets __gsm2NeedsFreshGum and every call reloads.
+        await session.evaluate(HOOK_JS)
+
     async def reload_control_ui(self) -> None:
         """Soft heal: stop Talk, reload Control UI page, ready for next start_talk."""
-        await self.stop_talk()
         if not cdp_available():
             raise TalkUiError("cdp unavailable for control ui reload")
+        session = await self._connect_page()
+        try:
+            page = await session.evaluate(PAGE_STATE_JS)
+            if live_talk_blocks_reload(page, talk_active=self.talk_active):
+                raise TalkUiError("refusing Control UI reload: Talk is live")
+        finally:
+            await session.close()
+        await self.stop_talk()
         session = await self._connect_page()
         try:
             await self._ensure_control_ui(session)

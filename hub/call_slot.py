@@ -186,6 +186,7 @@ class CallSlot:
 
 
 ADMIN_RELEASE_FRESH_S = 10.0
+HEAL_FRESH_S = 15.0
 
 
 def call_looks_live(
@@ -203,6 +204,25 @@ def call_looks_live(
     for key in ("last_ws_s", "last_uplink_s"):
         age = snapshot.get(key)
         if isinstance(age, (int, float)) and age < fresh_s:
+            return True
+    return False
+
+
+def disruptive_heal_blocked(health: dict) -> bool:
+    """True when Control UI reload or talk-chromium/gateway restart would hit a live path.
+
+    Blocks on talk_active, any busy CallSlot, or fresh last_ws_s / last_uplink_s
+    (redial race after busy flipped false).
+    """
+    call = health.get("call") or {}
+    talk = health.get("talk") or {}
+    if talk.get("talk_active"):
+        return True
+    if call.get("busy"):
+        return True
+    for key in ("last_ws_s", "last_uplink_s"):
+        age = call.get(key)
+        if isinstance(age, (int, float)) and age < HEAL_FRESH_S:
             return True
     return False
 

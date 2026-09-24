@@ -11,6 +11,7 @@ from call_slot import (
     CallWatchdogConfig,
     admin_release_allowed,
     call_looks_live,
+    disruptive_heal_blocked,
     ensure_released_after_abort,
 )
 
@@ -361,6 +362,37 @@ class AdminReleasePolicyTests(unittest.TestCase):
         self.assertFalse(call_looks_live(snap))
         ok, reason = admin_release_allowed(snap, force=False)
         self.assertTrue(ok)
+
+
+class DisruptiveHealBlockTests(unittest.TestCase):
+    def test_busy_or_talk_active_blocks_heal(self) -> None:
+        self.assertTrue(
+            disruptive_heal_blocked(
+                {"call": {"busy": True, "last_ws_s": 3.0}, "talk": {"talk_active": False}}
+            )
+        )
+        self.assertTrue(
+            disruptive_heal_blocked(
+                {"call": {"busy": False}, "talk": {"talk_active": True}}
+            )
+        )
+
+    def test_fresh_uplink_without_busy_blocks_redial_race(self) -> None:
+        self.assertTrue(
+            disruptive_heal_blocked(
+                {"call": {"busy": False, "last_uplink_s": 2.0, "last_ws_s": None}, "talk": {}}
+            )
+        )
+
+    def test_idle_health_allows_heal(self) -> None:
+        self.assertFalse(
+            disruptive_heal_blocked(
+                {
+                    "call": {"busy": False, "last_ws_s": None, "last_uplink_s": None},
+                    "talk": {"talk_active": False},
+                }
+            )
+        )
 
 
 class StaleBridgeClearPolicyTests(unittest.IsolatedAsyncioTestCase):

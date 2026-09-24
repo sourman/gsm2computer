@@ -39,6 +39,7 @@ from urllib.request import Request, urlopen
 import websockets
 from websockets.exceptions import ConnectionClosed
 
+from call_slot import disruptive_heal_blocked
 from alert_webhook import post_system_alert
 
 LOG = logging.getLogger("gsm2computer-e2e")
@@ -136,13 +137,7 @@ def health(*, retries: int = 8, delay_s: float = 0.5) -> dict[str, Any]:
 
 def line_idle(h: Optional[dict[str, Any]] = None) -> bool:
     h = h or health()
-    call = h.get("call") or {}
-    talk = h.get("talk") or {}
-    if call.get("busy"):
-        return False
-    if talk.get("talk_active"):
-        return False
-    return True
+    return not disruptive_heal_blocked(h)
 
 
 def real_call_holding(h: Optional[dict[str, Any]] = None) -> bool:
@@ -163,9 +158,7 @@ async def wait_until_idle(*, timeout_s: float = 20.0, poll_s: float = 0.25) -> b
         except Exception:
             await asyncio.sleep(poll_s)
             continue
-        call = h.get("call") or {}
-        talk = h.get("talk") or {}
-        if not call.get("busy") and not talk.get("talk_active"):
+        if not disruptive_heal_blocked(h):
             return True
         # Never touch /admin/call/release — close our own WS and wait.
         await asyncio.sleep(poll_s)
@@ -420,7 +413,7 @@ def _ws_url() -> str:
 
 
 def ensure_phone_mic_preflight() -> None:
-    """Ensure virtual mic unit is running. Post-Talk re-link is done by Talk UI."""
+    """Ensure virtual mic unit is running. Post-Talk re-link is pw-link, not unit restart."""
     import subprocess
     unit = "gsm2computer-openclaw-phone-mic.service"
     try:
@@ -492,7 +485,8 @@ async def run_once(step: str = "initial", *, allow_force: bool = False) -> E2ERe
                 result.latency_s = time.monotonic() - t0
                 return result
 
-            # Hook AFTER Talk page reload+PC create — earlier hook is wiped by NeedsFreshGum reload.
+            # Hook AFTER Talk WebRTC (PC exists). start_talk no longer reloads
+            # the page, but the hook still has to run after the peer is created.
             await install_dc_hook()
             # Attach to any DataChannel already open on the live PC.
             await _attach_existing_dc()
@@ -595,8 +589,12 @@ async def run_once(step: str = "initial", *, allow_force: bool = False) -> E2ERe
 
 async def soft_reload_talk() -> None:
     LOG.info("heal(a): soft reload Control UI")
+    if disruptive_heal_blocked(health()):
+        raise RuntimeError("refusing soft reload: live call or talk active")
     if not await wait_until_idle(timeout_s=20.0):
         raise RuntimeError("refusing soft reload: line not idle")
+    if disruptive_heal_blocked(health()):
+        raise RuntimeError("refusing soft reload: line became live")
     sys.path.insert(0, str(HUB_DIR))
     from talk_chromium import get_talk_ui  # type: ignore
 
@@ -606,9 +604,13 @@ async def soft_reload_talk() -> None:
 
 
 async def _systemctl_restart(unit: str) -> None:
-    if not line_idle():
-        raise RuntimeError(f"refusing to restart {unit}: line not idle")
+    if unit.startswith("gsm2computer-hub") or unit.startswith("hub"):
+        raise RuntimeError(f"refusing to restart {unit}: hub restart is never a heal step")
+    if disruptive_heal_blocked(health()):
+        raise RuntimeError(f"refusing to restart {unit}: live call or talk active")
     LOG.info("systemctl --user restart %s", unit)
+    if disruptive_heal_blocked(health()):
+        raise RuntimeError(f"refusing to restart {unit}: line became live")
     subprocess.run(
         ["systemctl", "--user", "restart", unit],
         check=True,
@@ -624,6 +626,9 @@ async def _systemctl_restart(unit: str) -> None:
         except Exception:
             continue
         talk = h.get("talk") or {}
+        if real_call_holding(h) or talk.get("talk_active"):
+            LOG.warning("heal wait stopped: live path after %s restart", unit)
+            return
         if unit.startswith("talk-chromium"):
             if talk.get("cdp") and line_idle(h):
                 return
@@ -655,8 +660,8 @@ async def heal_restart_talk_chromium() -> None:
 
 async def heal_audio_bus() -> None:
     LOG.info("heal(d): setup-audio-bus + sink-capture check")
-    if not line_idle():
-        raise RuntimeError("refusing audio bus heal: line not idle")
+    if disruptive_heal_blocked(health()):
+        raise RuntimeError("refusing audio bus heal: live call or talk active")
     script = HUB_DIR / "setup-audio-bus.sh"
     subprocess.run(["bash", str(script)], check=True, capture_output=True, text=True)
     # quick sink-capture sanity on openclaw_bus
