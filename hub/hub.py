@@ -1238,7 +1238,9 @@ async def handle_websocket(
         if tap is not None and not loopback and OPENCLAW_TALK_MODE == "webrtc-ui":
             await tap.start_source(
                 "openclaw-mic-48k-stereo",
-                f"{PHONE_UPLINK_SINK}.monitor",
+                # Prefer sink-capture virtual mic (same node Talk Chromium uses).
+                # phone_uplink.monitor is silent on current PipeWire.
+                os.environ.get("GSM2COMPUTER_OPENCLAW_MIC_TAP", "output.openclaw_phone_mic"),
                 48000,
                 2,
             )

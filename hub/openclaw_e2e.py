@@ -331,6 +331,65 @@ DC_SNAP_JS = r"""
 """
 
 
+
+async def _attach_existing_dc() -> None:
+    """Attach e2e DC listener to Talk datachannels created before the e2e hook."""
+    ws_url = await _cdp_page_ws()
+    import websockets
+
+    js = r"""
+(() => {
+  if (!window.__gsm2E2E) return {ok:false, reason:"no-e2e-hook"};
+  const push = (j) => {
+    try {
+      const t = j.type || "?";
+      window.__gsm2E2E.types.push(t);
+      if (t === "response.created") window.__gsm2E2E.responseCreated += 1;
+      if (t === "response.output_audio_transcript.delta" && j.delta)
+        window.__gsm2E2E.transcripts.push(String(j.delta));
+      if (t === "response.output_audio_transcript.done" && j.transcript)
+        window.__gsm2E2E.transcripts.push(String(j.transcript));
+    } catch (e) {}
+  };
+  const attach = (ch) => {
+    if (!ch || ch.__gsm2E2EAttached) return false;
+    ch.__gsm2E2EAttached = true;
+    window.__gsm2E2E.dc = ch;
+    ch.addEventListener("message", (ev) => {
+      if (typeof ev.data !== "string") return;
+      try { push(JSON.parse(ev.data)); } catch (e) {}
+    });
+    return true;
+  };
+  let n = 0;
+  if (window.__gsm2Dc && attach(window.__gsm2Dc)) n++;
+  for (const ch of (window.__gsm2DataChannels || [])) {
+    if (attach(ch)) n++;
+  }
+  for (const pc of (window.__gsm2TalkPcs || [])) {
+    pc.addEventListener("datachannel", (ev) => attach(ev.channel));
+  }
+  return {ok:true, attached:n, hasDc:!!window.__gsm2E2E.dc};
+})()
+"""
+    async with websockets.connect(ws_url, max_size=8_000_000, open_timeout=5) as ws:
+        nid = 1
+        await ws.send(
+            json.dumps(
+                {
+                    "id": nid,
+                    "method": "Runtime.evaluate",
+                    "params": {"expression": js, "returnByValue": True},
+                }
+            )
+        )
+        while True:
+            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+            if msg.get("id") == nid:
+                LOG.info("dc attach existing: %s", ((msg.get("result") or {}).get("result") or {}).get("value"))
+                return
+
+
 async def install_dc_hook() -> None:
     url = await _cdp_page_ws()
     async with websockets.connect(url, max_size=50_000_000) as ws:
@@ -359,8 +418,24 @@ def _ws_url() -> str:
     return f"{base}/e2e-test"
 
 
+
+def ensure_phone_mic_preflight() -> None:
+    """Ensure virtual mic unit is running. Post-Talk re-link is done by Talk UI."""
+    import subprocess
+    unit = "gsm2computer-openclaw-phone-mic.service"
+    try:
+        st = subprocess.run(["systemctl", "--user", "is-active", unit], capture_output=True, text=True, timeout=5)
+        if st.returncode != 0 or "active" not in (st.stdout or ""):
+            LOG.warning("preflight: starting %s (was %r)", unit, (st.stdout or "").strip())
+            subprocess.run(["systemctl", "--user", "restart", unit], check=False, timeout=10)
+            time.sleep(0.8)
+    except Exception as exc:
+        LOG.warning("preflight phone mic: %s", exc)
+
+
 async def run_once(step: str = "initial", *, allow_force: bool = False) -> E2EResult:
     """Run one e2e attempt. Never sends response.create unless allow_force (debug only)."""
+    ensure_phone_mic_preflight()
     t0 = time.monotonic()
     result = E2EResult(ok=False, step=step, latency_s=0.0)
     try:
@@ -378,7 +453,6 @@ async def run_once(step: str = "initial", *, allow_force: bool = False) -> E2ERe
 
         pcm = synthesize_prompt_pcm(PROMPT, PCM_RATE)
         chunks = _pcm_chunks(pcm, PCM_RATE)
-        await install_dc_hook()
         token = get_token()
         headers = {"Authorization": f"Bearer {token}"}
         async with websockets.connect(
@@ -417,6 +491,11 @@ async def run_once(step: str = "initial", *, allow_force: bool = False) -> E2ERe
             if result.aborted_for_real_call:
                 result.latency_s = time.monotonic() - t0
                 return result
+
+            # Hook AFTER Talk page reload+PC create — earlier hook is wiped by NeedsFreshGum reload.
+            await install_dc_hook()
+            # Attach to any DataChannel already open on the live PC.
+            await _attach_existing_dc()
 
             await ws.send(
                 json.dumps(

@@ -60,7 +60,7 @@ TALK_ROLLOVER_S = float(os.environ.get("GSM2COMPUTER_TALK_ROLLOVER_S", "1500"))
 
 HOOK_JS = r"""
 (() => {
-  const HOOK_VER = 3;
+  const HOOK_VER = 4;
   // Always (re)apply mic/APM patches when version advances; only wrap PC once.
   if (!window.__gsm2TalkPcs) window.__gsm2TalkPcs = [];
   if (!window.__gsm2PcWrapped) {
@@ -69,6 +69,20 @@ HOOK_JS = r"""
     function Wrapped(...args) {
       const pc = new Orig(...args);
       window.__gsm2TalkPcs.push(pc);
+      if (!window.__gsm2DataChannels) window.__gsm2DataChannels = [];
+      const trackDc = (ch) => {
+        if (!ch || ch.__gsm2Tracked) return;
+        ch.__gsm2Tracked = true;
+        window.__gsm2Dc = ch;
+        window.__gsm2DataChannels.push(ch);
+      };
+      const cdc = pc.createDataChannel.bind(pc);
+      pc.createDataChannel = (...x) => {
+        const ch = cdc(...x);
+        trackDc(ch);
+        return ch;
+      };
+      pc.addEventListener("datachannel", (ev) => trackDc(ev.channel));
       return pc;
     }
     Wrapped.prototype = Orig.prototype;
@@ -244,11 +258,12 @@ class TalkUiError(RuntimeError):
     """Control UI Talk is not up; hub must fail the call handshake."""
 
 
-def _cdp_http(path: str, timeout_s: float = 2.0) -> Any:
+def _cdp_http(path: str, timeout_s: float = 2.0, *, method: str = "GET") -> Any:
     url = f"http://{CDP_HOST}:{CDP_PORT}{path}"
-    req = Request(url, headers={"Host": f"{CDP_HOST}:{CDP_PORT}"})
+    req = Request(url, headers={"Host": f"{CDP_HOST}:{CDP_PORT}"}, method=method)
     with urlopen(req, timeout=timeout_s) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        raw = resp.read().decode("utf-8")
+        return json.loads(raw) if raw else {}
 
 
 def cdp_available(timeout_s: float = 0.8) -> bool:
@@ -413,16 +428,38 @@ def browser_pid() -> Optional[int]:
 
 
 class CdpSession:
+    """One DevTools WebSocket. Hard timeouts + force-close prevent attached wedges.
+
+    Cup 2026-09-24: hub left a page WS attached after hung navigate/evaluate;
+    Chromium kept target attached=true and later evaluates hung. Also ghost
+    targets list chat URL while document is about:blank.
+    """
+
     def __init__(self, ws: Any) -> None:
         self._ws = ws
         self._next_id = 1
         self._pending: dict[int, asyncio.Future] = {}
         self._recv_task = asyncio.create_task(self._recv_loop())
+        self._closed = False
 
     async def _recv_loop(self) -> None:
         try:
             async for raw in self._ws:
                 msg = json.loads(raw)
+                if msg.get("method") == "Page.javascriptDialogOpening":
+                    try:
+                        await self._ws.send(
+                            json.dumps(
+                                {
+                                    "id": 0x7ffffffe,
+                                    "method": "Page.handleJavaScriptDialog",
+                                    "params": {"accept": True},
+                                }
+                            )
+                        )
+                    except Exception:
+                        pass
+                    continue
                 req_id = msg.get("id")
                 if isinstance(req_id, int):
                     fut = self._pending.pop(req_id, None)
@@ -431,26 +468,36 @@ class CdpSession:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            for fut in self._pending.values():
+            for fut in list(self._pending.values()):
                 if not fut.done():
                     fut.set_exception(exc)
             self._pending.clear()
 
-    async def call(self, method: str, params: Optional[dict] = None, timeout_s: float = 10.0) -> dict:
+    async def call(self, method: str, params: Optional[dict] = None, timeout_s: float = 5.0) -> dict:
+        if self._closed:
+            raise TalkUiError("CDP session closed")
         req_id = self._next_id
         self._next_id += 1
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[req_id] = fut
-        payload = {"id": req_id, "method": method}
+        payload: dict[str, Any] = {"id": req_id, "method": method}
         if params is not None:
             payload["params"] = params
-        await self._ws.send(json.dumps(payload))
-        msg = await asyncio.wait_for(fut, timeout=timeout_s)
+        try:
+            await self._ws.send(json.dumps(payload))
+            msg = await asyncio.wait_for(fut, timeout=timeout_s)
+        except asyncio.TimeoutError:
+            self._pending.pop(req_id, None)
+            await self.close()
+            raise TalkUiError(f"CDP {method} timed out after {timeout_s:.1f}s") from None
+        except Exception:
+            self._pending.pop(req_id, None)
+            raise
         if "error" in msg:
             raise TalkUiError(f"CDP {method} failed: {msg['error']}")
         return msg.get("result") or {}
 
-    async def evaluate(self, expression: str, timeout_s: float = 10.0, await_promise: bool = False) -> Any:
+    async def evaluate(self, expression: str, timeout_s: float = 5.0, await_promise: bool = False) -> Any:
         result = await self.call(
             "Runtime.evaluate",
             {
@@ -467,16 +514,58 @@ class CdpSession:
         return inner.get("value")
 
     async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         self._recv_task.cancel()
         try:
             await self._recv_task
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, Exception):
             pass
+        for fut in list(self._pending.values()):
+            if not fut.done():
+                fut.set_exception(TalkUiError("CDP session closed"))
+        self._pending.clear()
         try:
-            await self._ws.close()
+            await asyncio.wait_for(self._ws.close(), timeout=1.0)
         except Exception:
-            pass
+            try:
+                transport = getattr(self._ws, "transport", None) or getattr(
+                    getattr(self._ws, "protocol", None), "transport", None
+                )
+                if transport is not None:
+                    transport.abort()
+            except Exception:
+                pass
 
+
+
+
+
+
+async def ensure_openclaw_phone_mic(*, force: bool = False) -> bool:
+    """Restart sink-capture virtual mic when inactive/missing (or force=True).
+
+    Returns True if restarted. After a restart, Control UI must reload so
+    getUserMedia rebinds — stale tracks keep media-source energy at 0.
+    """
+    unit = "gsm2computer-openclaw-phone-mic.service"
+    need = force
+    if not need:
+        rc, out, _ = await _run_captured(["systemctl", "--user", "is-active", unit], 8.0, "systemctl")
+        need = rc != 0 or "active" not in (out or "")
+    if not need:
+        rc2, sources, _ = await _run_captured(
+            ["pactl", "list", "sources", "short"], 5.0, "pactl sources"
+        )
+        if "openclaw_phone_mic" not in (sources or ""):
+            need = True
+    if need:
+        LOG.warning("restarting %s (openclaw Talk mic)", unit)
+        await _run_captured(["systemctl", "--user", "restart", unit], 10.0, "systemctl restart")
+        await asyncio.sleep(0.8)
+        return True
+    return False
 
 
 async def pin_phone_uplink_volume() -> None:
@@ -532,6 +621,7 @@ class OpenClawTalkUI:
 
     async def start_audio(self) -> None:
         """Bring Chromium + Control UI up before the phone is answered."""
+        await ensure_openclaw_phone_mic()
         self._closed = False
         await self.ensure_browser()
         session = await self._connect_page()
@@ -559,9 +649,13 @@ class OpenClawTalkUI:
     async def start_talk(self, *, allow_already_active: bool = True) -> None:
         if self._closed:
             raise TalkUiError("talk ui is closed")
+        mic_restarted = await ensure_openclaw_phone_mic()
         session = await self._connect_page()
         try:
             await session.evaluate(HOOK_JS)
+            # Always rebind mic: loopback links drop across calls while the unit
+            # stays "active", leaving WebRTC media-source energy at 0.
+            await session.evaluate("window.__gsm2NeedsFreshGum = true")
             hook_state = await session.evaluate(
                 "({gum:window.__gsm2GumPatchVer||0, fresh:!!window.__gsm2NeedsFreshGum})"
             )
@@ -586,6 +680,8 @@ class OpenClawTalkUI:
                     "window.__gsm2OrigGum=null;1"
                 )
                 await session.evaluate(HOOK_JS)
+                # Let sink-capture loopback finish linking before gUM/Talk.
+                await asyncio.sleep(1.0)
             clicked = await session.evaluate(CLICK_START_JS)
             LOG.info("talk click: %s", clicked)
             if not isinstance(clicked, dict):
@@ -618,6 +714,13 @@ class OpenClawTalkUI:
             self.webrtc_connected = True
             self.talk_started_at = time.monotonic()
             await self._bind_chromium_audio()
+            # Opening getUserMedia unlinks pw-loopback from phone_uplink (capture
+            # ports go idle). Restart the loopback *while* Chromium holds the
+            # source so sink-capture links reappear — otherwise media-source
+            # energy stays 0 and OpenClaw never VAD-triggers.
+            if await ensure_openclaw_phone_mic(force=True):
+                LOG.info("re-linked openclaw_phone_mic after Talk WebRTC bind")
+                await asyncio.sleep(0.6)
             LOG.info("control ui talk webrtc connected: %s", state.get("pcs"))
         finally:
             await session.close()
@@ -835,31 +938,97 @@ class OpenClawTalkUI:
             targets = _cdp_http("/json/list", timeout_s=2.0)
         except Exception as exc:
             raise TalkUiError(f"cdp list failed: {exc}") from exc
-        ws_url = None
-        for target in targets:
-            if target.get("type") != "page":
-                continue
-            url = str(target.get("url") or "")
-            if "devtools://" in url or url.startswith("chrome://"):
-                continue
+
+        def _is_chat(url: str) -> bool:
+            u = (url or "").lower()
+            return (
+                "hub-cup.mining-ling.ts.net" in u or "/chat/" in u
+            ) and not u.startswith(("devtools://", "chrome://", "about:blank"))
+
+        pages = [
+            tg
+            for tg in targets
+            if tg.get("type") == "page"
+            and tg.get("webSocketDebuggerUrl")
+            and not str(tg.get("url") or "").startswith(("devtools://", "chrome://"))
+        ]
+        chat_pages = [tg for tg in pages if _is_chat(str(tg.get("url") or ""))]
+        ordered = chat_pages + [tg for tg in pages if tg not in chat_pages]
+
+        last_err: Optional[BaseException] = None
+        for target in ordered:
             ws_url = target.get("webSocketDebuggerUrl")
-            if "openclaw" in url or "/chat/" in url or "mining-ling.ts.net" in url:
-                break
-        if not ws_url and targets:
-            ws_url = next(
-                (t.get("webSocketDebuggerUrl") for t in targets if t.get("type") == "page"),
-                None,
+            if not ws_url:
+                continue
+            session: Optional[CdpSession] = None
+            try:
+                ws = await asyncio.wait_for(
+                    websockets.connect(ws_url, max_size=16 * 1024 * 1024, open_timeout=3),
+                    timeout=4,
+                )
+                session = CdpSession(ws)
+                await session.call("Runtime.enable", timeout_s=3.0)
+                await session.call("Page.enable", timeout_s=3.0)
+                href = await session.evaluate("location.href", timeout_s=3.0)
+                if isinstance(href, str) and href.startswith("about:"):
+                    LOG.warning(
+                        "cdp ghost target list_url=%s href=%s — closing",
+                        (target.get("url") or "")[:70],
+                        href[:70],
+                    )
+                    await session.close()
+                    session = None
+                    tid = target.get("id")
+                    if tid:
+                        try:
+                            _cdp_http(f"/json/close/{tid}", timeout_s=2.0)
+                        except Exception:
+                            pass
+                    continue
+                return session
+            except Exception as exc:
+                last_err = exc
+                LOG.warning(
+                    "cdp target %s unusable (%s); trying next",
+                    (target.get("url") or "")[:60],
+                    exc,
+                )
+                if session is not None:
+                    try:
+                        await session.close()
+                    except Exception:
+                        pass
+
+        from urllib.parse import quote, urlencode
+
+        try:
+            fresh = _cdp_http(
+                "/json/new?" + urlencode({"url": control_ui_url_with_token()}),
+                timeout_s=5.0,
+                method="PUT",
             )
+        except Exception:
+            try:
+                fresh = _cdp_http(
+                    "/json/new/" + quote(control_ui_url_with_token(), safe=""),
+                    timeout_s=5.0,
+                )
+            except Exception as exc:
+                raise TalkUiError(
+                    f"no responsive CDP page and /json/new failed: {last_err or exc}"
+                ) from exc
+        ws_url = (fresh or {}).get("webSocketDebuggerUrl")
         if not ws_url:
-            version = _cdp_http("/json/version", timeout_s=2.0)
-            ws_url = version.get("webSocketDebuggerUrl")
-        if not ws_url:
-            raise TalkUiError("no CDP page websocket")
-        ws = await websockets.connect(ws_url, max_size=16 * 1024 * 1024)
+            raise TalkUiError(f"no CDP page websocket (last={last_err!r})")
+        ws = await asyncio.wait_for(
+            websockets.connect(ws_url, max_size=16 * 1024 * 1024, open_timeout=3),
+            timeout=4,
+        )
         session = CdpSession(ws)
-        await session.call("Runtime.enable")
-        await session.call("Page.enable")
+        await session.call("Runtime.enable", timeout_s=3.0)
+        await session.call("Page.enable", timeout_s=3.0)
         return session
+
 
     async def _ensure_control_ui(self, session: CdpSession) -> None:
         state = await session.evaluate(PAGE_STATE_JS)
@@ -872,7 +1041,7 @@ class OpenClawTalkUI:
         last = state if isinstance(state, dict) else {}
         while time.monotonic() < deadline:
             await asyncio.sleep(0.4)
-            last = await session.evaluate(PAGE_STATE_JS)
+            last = await session.evaluate(PAGE_STATE_JS, timeout_s=3.0)
             if isinstance(last, dict) and last.get("hasTalkButton"):
                 return
             snippet = str((last or {}).get("snippet") or "").lower()
@@ -976,7 +1145,6 @@ class OpenClawTalkUI:
             )
             if capture_ok and playback_ok and not bad_capture:
                 LOG.info("chromium pulse bind ok: %s", last)
-                await pin_phone_uplink_volume()
                 return
             if bad_capture:
                 LOG.warning("chromium capture on the wrong source; relinking (%s)", last)
