@@ -28,7 +28,7 @@ LOG = logging.getLogger("openclaw-talk-ui")
 
 CONTROL_UI_URL = os.environ.get(
     "GSM2COMPUTER_TALK_UI_URL",
-    "https://ip-172-31-21-244.mining-ling.ts.net/chat/main",
+    "https://hub.mining-ling.ts.net/chat/main",
 )
 CDP_PORT = int(os.environ.get("GSM2COMPUTER_TALK_CDP_PORT", "9222"))
 CDP_HOST = os.environ.get("GSM2COMPUTER_TALK_CDP_HOST", "127.0.0.1")
@@ -48,6 +48,7 @@ DISPLAY = os.environ.get("GSM2COMPUTER_TALK_DISPLAY", "")
 START_TIMEOUT_S = float(os.environ.get("GSM2COMPUTER_TALK_START_TIMEOUT", "45"))
 WEBRTC_TIMEOUT_S = float(os.environ.get("GSM2COMPUTER_TALK_WEBRTC_TIMEOUT", "25"))
 PAGE_TIMEOUT_S = float(os.environ.get("GSM2COMPUTER_TALK_PAGE_TIMEOUT", "30"))
+TALK_ROLLOVER_S = float(os.environ.get("GSM2COMPUTER_TALK_ROLLOVER_S", "1500"))
 
 HOOK_JS = r"""
 (() => {
@@ -63,6 +64,24 @@ HOOK_JS = r"""
   Wrapped.prototype = Orig.prototype;
   Object.setPrototypeOf(Wrapped, Orig);
   window.RTCPeerConnection = Wrapped;
+  // Chromium/WebRTC AGC was observed lowering Pulse phone_uplink.monitor
+  // (monitor.channel-volumes=true). Disable auto gain on capture constraints.
+  try {
+    const md = navigator.mediaDevices;
+    if (md && typeof md.getUserMedia === "function" && !window.__gsm2GumPatched) {
+      const origGum = md.getUserMedia.bind(md);
+      md.getUserMedia = (constraints) => {
+        const c = constraints ? {...constraints} : {};
+        if (c.audio === undefined || c.audio === true) {
+          c.audio = {autoGainControl: false, echoCancellation: true, noiseSuppression: true};
+        } else if (c.audio && typeof c.audio === "object") {
+          c.audio = {...c.audio, autoGainControl: false};
+        }
+        return origGum(c);
+      };
+      window.__gsm2GumPatched = true;
+    }
+  } catch (e) {}
   window.__gsm2TalkHook = true;
   return "hooked";
 })()
@@ -282,6 +301,8 @@ def chromium_args(url: str) -> list[str]:
         "--hide-crash-restore-bubble",
         "--disable-infobars",
         "--ozone-platform=x11",
+        # Reduce Chromium adjusting Pulse capture/source volumes via WebRTC APM.
+        "--disable-features=WebRtcAllowInputVolumeAdjustment",
         url,
     ]
 
@@ -387,6 +408,31 @@ class CdpSession:
             pass
 
 
+
+async def pin_phone_uplink_volume() -> None:
+    """Force phone_uplink (+ monitor) to 100% — Chromium AGC drifts it down."""
+    for kind, target in (
+        ("sink", PHONE_UPLINK_SINK),
+        ("source", PHONE_UPLINK_MONITOR),
+    ):
+        cmd = ["pactl", f"set-{kind}-volume", target, "100%"]
+        rc, out, err = await _run_captured(
+            cmd,
+            TOOL_TIMEOUT_S,
+            " ".join(cmd),
+        )
+        if rc != 0:
+            LOG.warning(
+                "pin %s volume %s failed rc=%s err=%s",
+                kind,
+                target,
+                rc,
+                (err or out)[:160],
+            )
+        else:
+            LOG.info("pinned %s volume %s to 100%%", kind, target)
+
+
 class OpenClawTalkUI:
     """Start/stop Control UI Talk in a dedicated Chromium via CDP."""
 
@@ -395,6 +441,7 @@ class OpenClawTalkUI:
         self._closed = False
         self.talk_active = False
         self.webrtc_connected = False
+        self.talk_started_at: Optional[float] = None
         self.last_state: dict[str, Any] = {}
 
     @property
@@ -439,7 +486,7 @@ class OpenClawTalkUI:
         finally:
             await session.close()
 
-    async def start_talk(self) -> None:
+    async def start_talk(self, *, allow_already_active: bool = True) -> None:
         if self._closed:
             raise TalkUiError("talk ui is closed")
         session = await self._connect_page()
@@ -449,6 +496,8 @@ class OpenClawTalkUI:
             LOG.info("talk click: %s", clicked)
             if not isinstance(clicked, dict):
                 raise TalkUiError(f"talk click returned {clicked!r}")
+            if clicked.get("state") == "already_active" and not allow_already_active:
+                raise TalkUiError("Control UI Talk still active after stop")
             if clicked.get("state") == "missing":
                 raise TalkUiError(
                     "Control UI Talk button missing; cannot start WebRTC Talk"
@@ -473,19 +522,47 @@ class OpenClawTalkUI:
             self.last_state = state
             self.talk_active = True
             self.webrtc_connected = True
+            self.talk_started_at = time.monotonic()
             await self._bind_chromium_audio()
             LOG.info("control ui talk webrtc connected: %s", state.get("pcs"))
         finally:
             await session.close()
 
-    async def start(self) -> None:
-        await self.start_audio()
-        await self.start_talk()
+    async def talk_session_healthy(self) -> Optional[bool]:
+        """Return whether Talk UI is live and has a connected WebRTC peer (None if CDP unavailable)."""
+        if not cdp_available():
+            return None
+        try:
+            session = await self._connect_page()
+        except Exception:
+            return None
+        try:
+            state = await session.evaluate(PAGE_STATE_JS)
+            if not isinstance(state, dict):
+                return None
+            if not state.get("live"):
+                return False
+            pcs = state.get("pcs") or []
+            if not pcs:
+                return False
+            for pc in pcs:
+                if not isinstance(pc, dict):
+                    continue
+                conn = pc.get("connection")
+                ice = pc.get("ice")
+                if conn == "connected" and ice in ("connected", "completed"):
+                    return True
+            return False
+        except Exception:
+            return None
+        finally:
+            await session.close()
 
-    async def stop(self) -> None:
-        self._closed = True
+    async def stop_talk(self) -> None:
+        """Stop the live Talk session without tearing down Chromium."""
         self.talk_active = False
         self.webrtc_connected = False
+        self.talk_started_at = None
         if not cdp_available():
             return
         try:
@@ -500,6 +577,46 @@ class OpenClawTalkUI:
             LOG.warning("talk stop click failed: %s", exc)
         finally:
             await session.close()
+
+    async def restart_talk(self) -> None:
+        """Refresh Control UI Talk before provider session limits (~30 min)."""
+        if self._closed:
+            raise TalkUiError("talk ui is closed")
+        age_s = 0.0
+        if self.talk_started_at is not None:
+            age_s = time.monotonic() - self.talk_started_at
+        LOG.info("talk rollover after %.0fs (limit=%.0fs)", age_s, TALK_ROLLOVER_S)
+        await self.stop_talk()
+        deadline = time.monotonic() + 12.0
+        still_live = True
+        while time.monotonic() < deadline:
+            if not cdp_available():
+                await asyncio.sleep(0.35)
+                continue
+            try:
+                session = await self._connect_page()
+            except Exception:
+                await asyncio.sleep(0.3)
+                continue
+            try:
+                state = await session.evaluate(PAGE_STATE_JS)
+            finally:
+                await session.close()
+            if isinstance(state, dict) and not state.get("live"):
+                still_live = False
+                break
+            await asyncio.sleep(0.35)
+        if still_live:
+            raise TalkUiError("talk rollover stop failed: Control UI still live")
+        await self.start_talk(allow_already_active=False)
+
+    async def start(self) -> None:
+        await self.start_audio()
+        await self.start_talk()
+
+    async def stop(self) -> None:
+        self._closed = True
+        await self.stop_talk()
 
     async def health(self) -> dict[str, Any]:
         pid = browser_pid()
@@ -725,6 +842,7 @@ class OpenClawTalkUI:
             )
             if capture_ok and playback_ok and not bad_capture:
                 LOG.info("chromium pulse bind ok: %s", last)
+                await pin_phone_uplink_volume()
                 return
             if bad_capture:
                 LOG.warning("chromium capture on the wrong source; relinking (%s)", last)

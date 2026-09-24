@@ -2,10 +2,10 @@
 # Push hub-stream settings into the phone app's SharedPreferences.
 #
 # Usage:
-#   HUB_CONTROL_URL=http://100.101.181.110:8787 ./scripts/configure-bridge.sh --force -s <serial>
+#   HUB_CONTROL_URL=http://hub.mining-ling.ts.net:8787 ./scripts/configure-bridge.sh --force -s <serial>
 #
 # Environment:
-#   HUB_CONTROL_URL             hub origin (default: Tailscale http://100.101.181.110:8787)
+#   HUB_CONTROL_URL             hub origin (default: Tailscale http://hub.mining-ling.ts.net:8787)
 #   STREAM_TOKEN_URL            token endpoint (default: {HUB_CONTROL_URL}/token)
 #   STREAM_ENABLED=true|false   (default: true when hub or token URL set)
 #   STREAM_MODEL                OpenAI only (default: gpt-realtime)
@@ -22,7 +22,7 @@ PKG="com.gsm2computer.bridge"
 PREFS="gsm2computer"
 FORCE=false
 SERIAL=""
-DEFAULT_HUB="http://100.101.181.110:8787"
+DEFAULT_HUB="http://hub.mining-ling.ts.net:8787"
 
 usage() {
   echo "Usage: $0 [--force] [-s SERIAL]" >&2

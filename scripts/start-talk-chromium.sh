@@ -5,7 +5,7 @@ set -euo pipefail
 
 PROFILE="${GSM2COMPUTER_TALK_USER_DATA_DIR:-$HOME/.config/chromium-openclaw-talk}"
 CDP_PORT="${GSM2COMPUTER_TALK_CDP_PORT:-9222}"
-URL="${GSM2COMPUTER_TALK_UI_URL:-https://ip-172-31-21-244.mining-ling.ts.net/chat/main}"
+URL="${GSM2COMPUTER_TALK_UI_URL:-https://hub.mining-ling.ts.net/chat/main}"
 CHROMIUM_BIN="${GSM2COMPUTER_CHROMIUM_BIN:-chromium-browser}"
 PULSE_SOURCE="${GSM2COMPUTER_PHONE_UPLINK_MONITOR:-phone_uplink.monitor}"
 PULSE_SINK="${GSM2COMPUTER_OPENCLAW_BUS:-openclaw_bus}"

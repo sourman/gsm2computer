@@ -3,14 +3,14 @@ package com.gsm2computer.bridge
 /**
  * Hub control-plane URL helpers.
  *
- * [hubControlUrl] is the Tailscale (or LAN) origin, e.g. `http://100.101.181.110:8787`.
+ * [hubControlUrl] is the Tailscale (or LAN) origin, e.g. `http://hub.mining-ling.ts.net:8787`.
  * Token, health, SMS, and the μ-law WebSocket upgrade all live on that host.
  * When the hub URL is blank the phone falls back to OpenAI Realtime.
  */
 object HubEndpoints {
 
     const val OPENAI_REALTIME_WS = "wss://api.openai.com/v1/realtime"
-    const val DEFAULT_HUB_CONTROL_URL = "http://100.101.181.110:8787"
+    const val DEFAULT_HUB_CONTROL_URL = "http://hub.mining-ling.ts.net:8787"
 
     fun normalizeBase(url: String): String = url.trim().trimEnd('/')
 
@@ -29,6 +29,24 @@ object HubEndpoints {
     fun smsUrl(hubControlUrl: String): String {
         val hub = normalizeBase(hubControlUrl)
         return if (hub.isEmpty()) "" else "$hub/sms"
+    }
+
+    /** Outbound SMS poll: `{hub}/sms/outbox`. */
+    fun smsOutboxUrl(hubControlUrl: String): String {
+        val hub = normalizeBase(hubControlUrl)
+        return if (hub.isEmpty()) "" else "$hub/sms/outbox"
+    }
+
+    /** Send-complete ack: `{hub}/sms/outbox/{id}/ack`. */
+    fun smsOutboxAckUrl(hubControlUrl: String, id: String): String {
+        val hub = normalizeBase(hubControlUrl)
+        return if (hub.isEmpty() || id.isBlank()) "" else "$hub/sms/outbox/$id/ack"
+    }
+
+    /** Call log ingest: `{hub}/calls`. */
+    fun callsUrl(hubControlUrl: String): String {
+        val hub = normalizeBase(hubControlUrl)
+        return if (hub.isEmpty()) "" else "$hub/calls"
     }
 
     /**
@@ -63,6 +81,41 @@ object HubEndpoints {
             append("\"receivedAt\":").append(jsonString(receivedAt))
             append('}')
         }
+
+    fun callJson(
+        direction: String,
+        number: String,
+        startedAt: String,
+        durationSec: Long,
+        switchboardMode: String = "",
+        sessionId: String = "",
+        tapSummary: String = "",
+    ): String = buildString {
+        append('{')
+        append("\"direction\":").append(jsonString(direction)).append(',')
+        append("\"number\":").append(jsonString(number)).append(',')
+        append("\"started_at\":").append(jsonString(startedAt)).append(',')
+        append("\"duration_sec\":").append(durationSec)
+        if (switchboardMode.isNotEmpty()) {
+            append(',').append("\"switchboard_mode\":").append(jsonString(switchboardMode))
+        }
+        if (sessionId.isNotEmpty()) {
+            append(',').append("\"session_id\":").append(jsonString(sessionId))
+        }
+        if (tapSummary.isNotEmpty()) {
+            append(',').append("\"tap_summary\":").append(jsonString(tapSummary))
+        }
+        append('}')
+    }
+
+    fun outboxAckJson(status: String, error: String = ""): String = buildString {
+        append('{')
+        append("\"status\":").append(jsonString(status))
+        if (error.isNotEmpty()) {
+            append(',').append("\"error\":").append(jsonString(error))
+        }
+        append('}')
+    }
 
     internal fun jsonString(value: String): String = buildString {
         append('"')

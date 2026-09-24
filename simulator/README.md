@@ -10,11 +10,11 @@ npm install
 npm run dev
 ```
 
-Open **http://localhost:5173** in Chrome or Firefox.
+Open **http://localhost:5173** in Chrome or Firefox, or use the portal **Simulator** tab at **http://localhost:5174/#/simulator** (same `simulator/src` code).
 
 ## Usage
 
-1. Leave the default hub URL (`http://100.101.181.110:8787`) or point at another hub.
+1. Leave the default hub URL (`http://hub.mining-ling.ts.net:8787`) or point at another hub.
 2. **Call path** (default **Loopback**): connects to `ws://…/loopback` — hub echoes μ-law without OpenClaw. Use with test tone or mic to sanity-check the wire.
 3. Select **OpenClaw** for the agent path (downlink is agent speech on `openclaw_bus`, not echo).
 4. Click **Start call** — mic permission when not using test tone; fetches `/token`, opens WebSocket, waits for `session.updated`.
@@ -38,7 +38,7 @@ The event log shows WS status, `session.updated`, errors, and byte counters.
 
 ```bash
 npm run validate
-node scripts/validate-ws.mjs http://100.101.181.110:8787 --loopback
+node scripts/validate-ws.mjs http://hub.mining-ling.ts.net:8787 --loopback
 ```
 
 Checks `/health`, `/token`, WebSocket + `session.updated`, and sends 2 s of synthetic 440 Hz μ-law tone.

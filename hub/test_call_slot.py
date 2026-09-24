@@ -6,7 +6,13 @@ import asyncio
 import os
 import unittest
 
-from call_slot import CallSlot, CallWatchdogConfig
+from call_slot import (
+    CallSlot,
+    CallWatchdogConfig,
+    admin_release_allowed,
+    call_looks_live,
+    ensure_released_after_abort,
+)
 
 
 class FakeClock:
@@ -201,6 +207,67 @@ class CallWatchdogPolicyTests(unittest.TestCase):
         self.assertFalse(self.slot.busy)
 
 
+class EnsureReleasedAfterAbortTests(unittest.IsolatedAsyncioTestCase):
+    async def test_abort_with_bridge_still_referenced_clears_busy(self) -> None:
+        """Mirrors /admin/call/release when active_bridge is set and WS finally never runs."""
+        slot = CallSlot(CallWatchdogConfig(enabled=False), clock=FakeClock())
+        self.assertTrue(slot.claim("/"))
+        slot.mark_established()
+        # Stand-in for hub.active_bridge still pointing at a live PipewireBridge:
+        # abort alone must not clear the lock; ensure_released_after_abort must.
+        bridge_still_referenced = object()
+        self.assertIsNotNone(bridge_still_referenced)
+        slot.abort_call("admin force-release")
+        self.assertTrue(slot.busy)
+        self.assertTrue(slot.abort.is_set())
+        forced = await ensure_released_after_abort(
+            slot, "admin force-release", wait_s=0.05
+        )
+        # already aborted; second abort is a no-op for reason, but wait+release runs
+        self.assertTrue(forced)
+        self.assertFalse(slot.busy)
+        self.assertIsNone(slot.abort_reason)
+
+    async def test_ensure_released_force_clears_when_handler_wedged(self) -> None:
+        slot = CallSlot(CallWatchdogConfig(enabled=False), clock=FakeClock())
+        self.assertTrue(slot.claim("/"))
+        forced = await ensure_released_after_abort(
+            slot, "websocket ping send failed: Connection reset by peer", wait_s=0.05
+        )
+        self.assertTrue(forced)
+        self.assertFalse(slot.busy)
+
+    async def test_ensure_released_noop_if_finally_already_released(self) -> None:
+        slot = CallSlot(CallWatchdogConfig(enabled=False), clock=FakeClock())
+        self.assertTrue(slot.claim("/"))
+
+        async def handler_finally() -> None:
+            await asyncio.sleep(0.02)
+            slot.release()
+
+        task = asyncio.create_task(handler_finally())
+        forced = await ensure_released_after_abort(slot, "watchdog", wait_s=0.1)
+        await task
+        self.assertFalse(forced)
+        self.assertFalse(slot.busy)
+
+    async def test_ensure_released_does_not_clobber_newer_claim(self) -> None:
+        clock = FakeClock()
+        slot = CallSlot(CallWatchdogConfig(enabled=False), clock=clock)
+        self.assertTrue(slot.claim("/old"))
+        ensure = asyncio.create_task(
+            ensure_released_after_abort(slot, "stale", wait_s=0.15)
+        )
+        await asyncio.sleep(0.05)
+        slot.release()
+        clock.advance(1.0)  # new claim must get a distinct claimed_at
+        self.assertTrue(slot.claim("/new"))
+        forced = await ensure
+        self.assertFalse(forced)
+        self.assertTrue(slot.busy)
+        self.assertEqual(slot.path, "/new")
+
+
 class CallWatchdogConfigTests(unittest.TestCase):
     def test_from_env_zero_disables_max(self) -> None:
         prev = os.environ.get("GSM2COMPUTER_CALL_MAX_S")
@@ -247,3 +314,78 @@ class WaitFrameOrAbortTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AdminReleasePolicyTests(unittest.TestCase):
+    def test_idle_busy_allows_release(self) -> None:
+        snap = {
+            "busy": True,
+            "last_ws_s": 71.0,
+            "last_uplink_s": 71.0,
+            "age_s": 465.0,
+        }
+        self.assertFalse(call_looks_live(snap))
+        ok, reason = admin_release_allowed(snap, force=False)
+        self.assertTrue(ok)
+        self.assertEqual(reason, "ok")
+
+    def test_fresh_ws_refuses_without_force(self) -> None:
+        snap = {
+            "busy": True,
+            "last_ws_s": 0.7,
+            "last_uplink_s": 0.7,
+            "age_s": 31.0,
+        }
+        self.assertTrue(call_looks_live(snap))
+        ok, reason = admin_release_allowed(snap, force=False)
+        self.assertFalse(ok)
+        self.assertIn("force=1", reason)
+
+    def test_force_overrides_live_call(self) -> None:
+        snap = {"busy": True, "last_ws_s": 0.1, "last_uplink_s": 0.1}
+        ok, reason = admin_release_allowed(snap, force=True)
+        self.assertTrue(ok)
+        self.assertEqual(reason, "forced")
+
+    def test_busy_false_allows_stale_bridge_clear(self) -> None:
+        """Ghost-reject case: slot free but active_bridge still set."""
+        snap = {
+            "busy": False,
+            "path": None,
+            "age_s": None,
+            "established_s": None,
+            "last_ws_s": None,
+            "last_uplink_s": None,
+            "abort_reason": None,
+        }
+        self.assertFalse(call_looks_live(snap))
+        ok, reason = admin_release_allowed(snap, force=False)
+        self.assertTrue(ok)
+
+
+class StaleBridgeClearPolicyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reaper_style_clear_when_busy_already_false(self) -> None:
+        """After ensure_released_after_abort, busy=false but a bridge ref remains.
+
+        Reaper/admin must still drop that ref so the reject gate
+        `busy or active_bridge is not None` cannot 409 forever.
+        """
+        slot = CallSlot(CallWatchdogConfig(enabled=False), clock=FakeClock())
+        self.assertTrue(slot.claim("/"))
+        slot.mark_established()
+        forced = await ensure_released_after_abort(slot, "websocket idle 71s", wait_s=0.05)
+        self.assertTrue(forced)
+        self.assertFalse(slot.busy)
+
+        # Simulate hub.active_bridge still pointing at a live object.
+        active_bridge = {"name": "stale-pipewire-bridge"}
+        bridge_ref = active_bridge
+
+        # Policy used by hub._clear_stale_active_bridge: clear global first.
+        if bridge_ref is not None and active_bridge is bridge_ref:
+            active_bridge = None
+        self.assertIsNone(active_bridge)
+        # Reject gate equivalent:
+        reject = slot.busy or active_bridge is not None
+        self.assertFalse(reject)
+

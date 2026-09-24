@@ -28,7 +28,7 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("boolean", "DEFAULT_STREAM_ENABLED", "true")
-        buildConfigField("String", "DEFAULT_HUB_CONTROL_URL", "\"http://100.101.181.110:8787\"")
+        buildConfigField("String", "DEFAULT_HUB_CONTROL_URL", "\"http://hub.mining-ling.ts.net:8787\"")
         buildConfigField("String", "DEFAULT_STREAM_TOKEN_URL", "\"\"")
         buildConfigField("String", "DEFAULT_STREAM_MODEL", "\"gpt-realtime\"")
         buildConfigField("String", "DEFAULT_STREAM_VOICE", "\"marin\"")

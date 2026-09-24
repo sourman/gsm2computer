@@ -11,6 +11,7 @@ Environment=GSM2COMPUTER_HUB_HOST=100.101.181.110
 Environment=GSM2COMPUTER_HUB_PORT=8787
 Environment=GSM2COMPUTER_AUTO_MODE=openclaw
 Environment=GSM2COMPUTER_OPENCLAW_TALK=webrtc-ui
+# Optional outbound alerts: drop-in alert-webhook.conf (see docs/alert-webhook.conf.example)
 Restart=on-failure
 RestartSec=3
 

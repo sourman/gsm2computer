@@ -1,0 +1,1 @@
+const e=!0,t="openclaw",o="webrtc-ui",a={id:"tap-mock-1",dir:"in",meta:{number:"+15550100"},streams:{"gsm-uplink-8k-mono":{seconds:126.4}}},l={ok:!0,mode:t,openclaw_talk:o,last_call_tap:a};export{l as default,a as last_call_tap,t as mode,e as ok,o as openclaw_talk};

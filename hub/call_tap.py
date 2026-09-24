@@ -420,14 +420,16 @@ class CallTap:
             if not left.is_file() or not right.is_file():
                 continue
             out = self.dir / out_name
+            left_stats = self._streams[left_name].stats() if left_name in self._streams else {}
+            right_stats = self._streams[right_name].stats() if right_name in self._streams else {}
+            stem_seconds = max(left_stats.get("seconds", 0.0), right_stats.get("seconds", 0.0))
+            mix_timeout = max(MIX_TIMEOUT_S, stem_seconds * 0.05 + 60.0)
             try:
-                stats = await mix_stereo_mp3(left, right, out, rate)
+                stats = await mix_stereo_mp3(left, right, out, rate, timeout=mix_timeout)
             except Exception as exc:
                 LOG.error("call tap mix %s failed: %s; leaving WAV stems", out_name, exc)
                 continue
-            left_stats = self._streams[left_name].stats() if left_name in self._streams else {}
-            right_stats = self._streams[right_name].stats() if right_name in self._streams else {}
-            stats["seconds"] = max(left_stats.get("seconds", 0.0), right_stats.get("seconds", 0.0))
+            stats["seconds"] = stem_seconds
             stats["left"] = left_name
             stats["right"] = right_name
             left.unlink()

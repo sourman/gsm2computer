@@ -8,6 +8,9 @@
  * Usage:
  *   bun run scripts/create-linear-tickets.ts --dry-run
  *   bun run scripts/create-linear-tickets.ts
+ *
+ * Portal / SMS / call-log tickets (ADR 0006) live in
+ * `scripts/linear-portal-tickets.ts` — do not append them here.
  */
 import { execFileSync } from "node:child_process";
 
