@@ -173,6 +173,46 @@ class CallSlot:
         }
 
 
+
+
+ADMIN_RELEASE_FRESH_S = 10.0
+
+
+def call_looks_live(
+    snapshot: dict,
+    *,
+    fresh_s: float = ADMIN_RELEASE_FRESH_S,
+) -> bool:
+    """True when the slot is busy with recent websocket or uplink activity.
+
+    Used by /admin/call/release to refuse cutting a healthy live call unless
+    the caller passes force=1.
+    """
+    if not snapshot.get("busy"):
+        return False
+    for key in ("last_ws_s", "last_uplink_s"):
+        age = snapshot.get(key)
+        if isinstance(age, (int, float)) and age < fresh_s:
+            return True
+    return False
+
+
+def admin_release_allowed(
+    snapshot: dict,
+    *,
+    force: bool = False,
+    fresh_s: float = ADMIN_RELEASE_FRESH_S,
+) -> tuple[bool, str]:
+    """Return (ok, reason) for an admin CallSlot release request."""
+    if force:
+        return True, "forced"
+    if call_looks_live(snapshot, fresh_s=fresh_s):
+        return (
+            False,
+            "live call with fresh ws/uplink activity; pass force=1 to override",
+        )
+    return True, "ok"
+
 async def ensure_released_after_abort(
     slot: "CallSlot",
     reason: str,
