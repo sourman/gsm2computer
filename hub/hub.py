@@ -806,7 +806,10 @@ async def _watch_live_call(
             reason,
             slot.snapshot(now),
         )
-        post_system_alert(f"call watchdog abort: {reason}")
+        post_system_alert(
+            f"call watchdog abort: {reason}",
+            e2e=bool(getattr(slot, "is_e2e", False) or CallSlot.path_is_e2e(getattr(slot, "path", "") or "")),
+        )
         try:
             await ws_send_close(writer, 1011, reason)
         except (ConnectionError, BrokenPipeError, OSError) as exc:
@@ -871,7 +874,10 @@ async def _ensure_call_slot_freed(
                 slot.snapshot(),
             )
             slot.release()
-            post_system_alert(f"call slot force-release after abort: {reason}")
+            post_system_alert(
+                f"call slot force-release after abort: {reason}",
+                e2e=bool(getattr(slot, "is_e2e", False)),
+            )
         cleared = await _clear_stale_active_bridge(bridge_ref)
         if cleared:
             LOG.error(
@@ -1552,7 +1558,8 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 post_system_alert(
                     f"admin force-release CallSlot (was busy={snap.get('busy')} "
                     f"age_s={snap.get('age_s')} forced={forced} bridge_cleared={cleared} "
-                    f"force={force})"
+                    f"force={force} path={snap.get('path')})",
+                    e2e=bool(snap.get("e2e")),
                 )
                 LOG.error(
                     "admin force-release CallSlot forced=%s bridge_cleared=%s %s -> %s",
@@ -1617,7 +1624,9 @@ async def _reap_stuck_call_slot() -> None:
             if forced or cleared or talk_stopped:
                 post_system_alert(
                     f"call slot reaper force-release: {reason} "
-                    f"(forced={forced} bridge_cleared={cleared} talk_stopped={talk_stopped})"
+                    f"(forced={forced} bridge_cleared={cleared} talk_stopped={talk_stopped} "
+                    f"path={snap.get('path')})",
+                    e2e=bool(snap.get("e2e")),
                 )
                 LOG.error(
                     "call slot reaper released lock after abort wait "

@@ -115,3 +115,14 @@ class AlertWebhookTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestE2EAlertSkip(unittest.TestCase):
+    def test_is_test_alert_paths(self):
+        from alert_webhook import is_test_alert
+
+        self.assertTrue(is_test_alert("admin force-release path=/e2e-test"))
+        self.assertTrue(is_test_alert("OpenClaw e2e FAILED after heal ladder"))
+        self.assertTrue(is_test_alert("x", e2e=True))
+        self.assertFalse(is_test_alert("admin force-release path=/ age_s=40"))
+

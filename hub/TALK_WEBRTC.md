@@ -120,3 +120,9 @@ non-silent `openclaw-spk` + `gsm-downlink`, and a non-empty transcript.
 - `/e2e-test` is preempted by a real Pixel path so Safwat never sees line-busy
   from a self-test (exception to ADR 0004 for synthetic holders only)
 - Logs: `~/gsm2computer-e2e/e2e.log` (rotated); taps under `~/gsm2computer-e2e-calls/`
+
+### Talk mic (PipeWire)
+
+`phone_uplink.monitor` can be silent on PipeWire 1.4 null sinks. Talk uses
+`openclaw_phone_mic` (pw-loopback sink-capture of `phone_uplink`), selected by
+label in the Control UI gUM hook. Unit: `gsm2computer-openclaw-phone-mic.service`.

@@ -154,6 +154,24 @@ def real_call_holding(h: Optional[dict[str, Any]] = None) -> bool:
     return not bool(call.get("e2e"))
 
 
+async def wait_until_idle(*, timeout_s: float = 20.0, poll_s: float = 0.25) -> bool:
+    """Wait until hub reports no busy call and talk inactive (post-e2e teardown)."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            h = health()
+        except Exception:
+            await asyncio.sleep(poll_s)
+            continue
+        call = h.get("call") or {}
+        talk = h.get("talk") or {}
+        if not call.get("busy") and not talk.get("talk_active"):
+            return True
+        # Never touch /admin/call/release — close our own WS and wait.
+        await asyncio.sleep(poll_s)
+    return line_idle()
+
+
 def get_token() -> str:
     data = _http_json("POST", f"{HUB_HTTP}/token", body=b"")
     if not isinstance(data, dict) or not data.get("value"):
@@ -498,12 +516,14 @@ async def run_once(step: str = "initial", *, allow_force: bool = False) -> E2ERe
 
 async def soft_reload_talk() -> None:
     LOG.info("heal(a): soft reload Control UI")
-    # Prefer hub's talk_chromium API when importable; else CDP reload.
+    if not await wait_until_idle(timeout_s=20.0):
+        raise RuntimeError("refusing soft reload: line not idle")
     sys.path.insert(0, str(HUB_DIR))
     from talk_chromium import get_talk_ui  # type: ignore
 
     ui = get_talk_ui()
     await ui.reload_control_ui()
+    await wait_until_idle(timeout_s=15.0)
 
 
 async def _systemctl_restart(unit: str) -> None:
@@ -643,6 +663,7 @@ async def run_with_ladder(*, simulate_fail_check: bool = False) -> E2EResult:
         return r
 
     result = await run_once("initial")
+    await wait_until_idle(timeout_s=25.0)
     if simulate_fail_check and result.ok:
         # Force the ladder to exercise by treating the first pass as fail once.
         LOG.warning("simulate_fail_check: flipping initial PASS to FAIL to exercise ladder")
@@ -656,9 +677,19 @@ async def run_with_ladder(*, simulate_fail_check: bool = False) -> E2EResult:
     for name, fn in HEAL_STEPS:
         if name in used:
             continue
-        if real_call_holding() or not line_idle():
+        # Prior test session must be fully torn down before any heal restart.
+        if not await wait_until_idle(timeout_s=25.0):
+            if real_call_holding():
+                result.error = f"aborted ladder at {name}: real call holding"
+                result.aborted_for_real_call = True
+                persist(result, {"ladder_stop": name})
+                return result
+            result.error = f"aborted ladder at {name}: prior session not idle"
+            persist(result, {"ladder_stop": name})
+            return result
+        if real_call_holding():
             result.error = f"aborted ladder at {name}: line busy"
-            result.aborted_for_real_call = real_call_holding()
+            result.aborted_for_real_call = True
             persist(result, {"ladder_stop": name})
             return result
         try:
@@ -668,23 +699,29 @@ async def run_with_ladder(*, simulate_fail_check: bool = False) -> E2EResult:
             LOG.warning("heal step %s failed: %s", name, exc)
             used.add(name)
             continue
-        await asyncio.sleep(1.0)
-        if not line_idle():
+        await wait_until_idle(timeout_s=45.0)
+        if real_call_holding() or not line_idle():
             result.error = f"line busy after heal {name}"
             persist(result)
             return result
         result = await run_once(name)
+        await wait_until_idle(timeout_s=25.0)
         if result.ok or result.aborted_for_real_call:
             persist(result, {"healed_by": name})
             return result
 
     persist(result, {"ladder_exhausted": True})
-    post_system_alert(
-        "OpenClaw e2e FAILED after heal ladder: "
-        f"spk={result.spk_peak:.3f} dl={result.downlink_peak:.3f} "
-        f"unforced={result.triggered_unforced} "
-        f"transcript={result.transcript[:60]!r} err={result.error}"
-    )
+    # Alerts off until ladder is validated (GSM2COMPUTER_E2E_ALERT=1 to enable).
+    if os.environ.get("GSM2COMPUTER_E2E_ALERT", "0").lower() in ("1", "true", "yes", "on"):
+        post_system_alert(
+            "OpenClaw e2e FAILED after heal ladder: "
+            f"spk={result.spk_peak:.3f} dl={result.downlink_peak:.3f} "
+            f"unforced={result.triggered_unforced} "
+            f"transcript={result.transcript[:60]!r} err={result.error}",
+            e2e=True,
+        )
+    else:
+        LOG.warning("e2e ladder exhausted (alert suppressed): %s", result.summary())
     return result
 
 

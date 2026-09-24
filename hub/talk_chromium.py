@@ -81,21 +81,41 @@ HOOK_JS = r"""
       googTypingNoiseDetection: false,
       googAudioMirroring: false,
     };
-    const forceAudio = (audio) => {
-      if (audio === undefined || audio === true) return {...apmOff};
-      if (audio && typeof audio === "object") return {...audio, ...apmOff};
+    // Prefer sink-capture virtual mic (openclaw_phone_mic). phone_uplink.monitor
+    // is silent on current PipeWire (monitor.passthrough); default deviceId also
+    // yields media-source energy 0 so OpenClaw never VAD-triggers.
+    const MIC_LABEL_RE = /OpenClaw_Phone_Mic|openclaw_phone_mic/i;
+    const MIC_FALLBACK_RE = /OpenClaw_Mic|phone_uplink/i;
+    const pickMicId = async () => {
+      try {
+        const devs = await md.enumerateDevices();
+        const inputs = devs.filter((d) => d.kind === "audioinput");
+        const hit =
+          inputs.find((d) => MIC_LABEL_RE.test(d.label || "")) ||
+          inputs.find((d) => MIC_FALLBACK_RE.test(d.label || ""));
+        return hit ? hit.deviceId : null;
+      } catch (e) {
+        return null;
+      }
+    };
+    const forceAudio = async (audio) => {
+      const micId = await pickMicId();
+      const extra = micId ? {deviceId: {exact: micId}} : {};
+      if (audio === undefined || audio === true) return {...apmOff, ...extra};
+      if (audio && typeof audio === "object") return {...audio, ...apmOff, ...extra};
       return audio;
     };
-    if (md && typeof md.getUserMedia === "function" && !window.__gsm2GumPatched) {
-      const origGum = md.getUserMedia.bind(md);
-      md.getUserMedia = (constraints) => {
+    // Versioned re-patch so hot hub deploys replace a stale gUM wrapper.
+    const GUM_VER = 3;
+    if (md && typeof md.getUserMedia === "function" && window.__gsm2GumPatchVer !== GUM_VER) {
+      const origGum = (window.__gsm2OrigGum || md.getUserMedia).bind(md);
+      window.__gsm2OrigGum = window.__gsm2OrigGum || md.getUserMedia.bind(md);
+      md.getUserMedia = async (constraints) => {
         const c = constraints ? {...constraints} : {};
-        c.audio = forceAudio(c.audio);
+        c.audio = await forceAudio(c.audio);
         return origGum(c);
       };
-      if (typeof md.enumerateDevices === "function") {
-        // no-op marker for health/debug
-      }
+      window.__gsm2GumPatchVer = GUM_VER;
       window.__gsm2GumPatched = true;
     }
     // OpenClaw may tighten constraints after gUM; keep APM off.
@@ -309,7 +329,11 @@ def chromium_launch_env() -> dict[str, str]:
     if xauth:
         env["XAUTHORITY"] = xauth
     env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
-    env["PULSE_SOURCE"] = PHONE_UPLINK_MONITOR
+    # Sink-capture virtual mic (see setup-audio-bus.sh); fall back to configured monitor.
+    env["PULSE_SOURCE"] = os.environ.get(
+        "GSM2COMPUTER_TALK_PULSE_SOURCE",
+        os.environ.get("GSM2COMPUTER_PHONE_UPLINK_MONITOR", "openclaw_phone_mic"),
+    )
     env["PULSE_SINK"] = OPENCLAW_BUS
     # Never let Chromium inherit the AWS virtual mic or gsm_bus as capture.
     env.pop("PULSE_LATENCY_MSEC", None)
@@ -885,12 +909,17 @@ class OpenClawTalkUI:
                 "pactl list sink-inputs",
             )
             sinks = out2 if rc2 == 0 else ""
-            capture_ok = PHONE_UPLINK_MONITOR in sources or PHONE_UPLINK_SINK in sources
+            capture_ok = (
+                PHONE_UPLINK_MONITOR in sources
+                or PHONE_UPLINK_SINK in sources
+                or "openclaw_phone_mic" in sources
+                or "openclaw_mic" in sources
+            )
             playback_ok = OPENCLAW_BUS in sinks
             bad_capture = any(
                 name in sources
                 for name in ("AWS-Virtual-Microphone", "gsm_bus.monitor", "openclaw_bus.monitor")
-            )
+            ) and "openclaw_phone_mic" not in sources and PHONE_UPLINK_MONITOR not in sources
             last = (
                 f"capture_ok={capture_ok} playback_ok={playback_ok} "
                 f"bad_capture={bad_capture} source-outputs={len(sources)} sink-inputs={len(sinks)}"
