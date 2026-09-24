@@ -14,7 +14,7 @@ Internal stem names are unchanged:
   phone μ-law WS  →  gsm-uplink-8k-mono.wav
   hub 8 kHz capture before μ-law  →  gsm-downlink-8k-mono.wav
   phone_uplink.monitor (Chromium mic)  →  openclaw-mic-48k-stereo.wav
-  openclaw_bus.monitor (Chromium speaker)  →  openclaw-spk-48k-stereo.wav
+  openclaw_bus (Chromium speaker, sink capture)  →  openclaw-spk-48k-stereo.wav
 
 relay graph also writes openclaw-append-24k-mono.wav and openclaw-tts-24k-mono.wav.
 
@@ -36,6 +36,7 @@ from pipewire_target import (
     pipewire_stream_env,
     pw_cat_raw_args,
     pw_latency_args,
+    record_uses_sink_capture,
     resolve_pipewire_record_target,
     stdbuf_unbuffered,
 )
@@ -278,10 +279,11 @@ class CallTap:
         if self._closed:
             return
         try:
+            capture_sink = record_uses_sink_capture(source)
             serial = await resolve_pipewire_record_target(source)
             raw = await pw_cat_raw_args()
             latency = pw_latency_args()
-            env = pipewire_stream_env(rate)
+            env = pipewire_stream_env(rate, capture_sink=capture_sink)
             proc = await asyncio.create_subprocess_exec(
                 *stdbuf_unbuffered(),
                 "pw-record",
@@ -308,7 +310,7 @@ class CallTap:
             return
         self._procs.append(proc)
         self._tasks.append(asyncio.create_task(self._pump(proc, name, rate, channels, source)))
-        LOG.info("call tap %s recording %s serial=%s %s/%sch", name, source, serial, rate, channels)
+        LOG.info("call tap %s recording %s serial=%s capture_sink=%s %s/%sch", name, source, serial, capture_sink, rate, channels)
 
     async def _pump(
         self,

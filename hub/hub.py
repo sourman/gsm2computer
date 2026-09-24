@@ -35,6 +35,7 @@ from pipewire_target import (
     pipewire_stream_env,
     pw_cat_raw_args,
     pw_latency_args,
+    record_uses_sink_capture,
     stdbuf_unbuffered,
     resolve_pipewire_playback_target,
     resolve_pipewire_record_target,
@@ -46,10 +47,10 @@ PORT = int(os.environ.get("GSM2COMPUTER_HUB_PORT", "8787"))
 HUB_DIR = Path(os.environ.get("GSM2COMPUTER_HUB_DIR", Path(__file__).resolve().parent))
 SWITCHBOARD = HUB_DIR / "switchboard.sh"
 GSM_SINK = os.environ.get("GSM2COMPUTER_GSM_SINK", "gsm_bus")
-GSM_MONITOR = os.environ.get("GSM2COMPUTER_GSM_MONITOR", "gsm_bus.monitor")
+GSM_MONITOR = os.environ.get("GSM2COMPUTER_GSM_MONITOR", "gsm_bus")
 PHONE_UPLINK_SINK = os.environ.get("GSM2COMPUTER_PHONE_UPLINK_SINK", "phone_uplink")
 OPENCLAW_DOWNLINK_MONITOR = os.environ.get(
-    "GSM2COMPUTER_OPENCLAW_DOWNLINK_MONITOR", "openclaw_bus.monitor"
+    "GSM2COMPUTER_OPENCLAW_DOWNLINK_MONITOR", "openclaw_bus"
 )
 AUDIO_RATE = int(os.environ.get("GSM2COMPUTER_AUDIO_RATE", "8000"))
 # PipeWire buses on safwat-eu are 48 kHz. Clients may send 8 kHz μ-law
@@ -536,8 +537,15 @@ class PipewireBridge:
         LOG.info("hub playback linked: %s", detail)
 
         if record_downlink:
+            capture_sink = record_uses_sink_capture(record_target)
             record_serial = await resolve_pipewire_record_target(record_target)
-            LOG.info("pw-record target %s -> serial %s", record_target, record_serial)
+            LOG.info(
+                "pw-record target %s -> serial %s capture_sink=%s",
+                record_target,
+                record_serial,
+                capture_sink,
+            )
+            rec_env = pipewire_stream_env(self.rate, capture_sink=capture_sink)
             self._record = await asyncio.create_subprocess_exec(
                 *stdbuf_unbuffered(),
                 "pw-record",
@@ -557,7 +565,7 @@ class PipewireBridge:
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=pw_env,
+                env=rec_env,
             )
             self._track_helper(self._record, "hub pw-record")
             rec_detail = await wait_for_pipewire_link(

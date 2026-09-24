@@ -102,14 +102,54 @@ async def resolve_pipewire_playback_target(name: str) -> str:
     return serial
 
 
-async def resolve_pipewire_record_target(name: str) -> str:
-    """pw-record --target wants the source/monitor object's serial.
+# Null-sink speaker buses whose .monitor no longer carries audio on current
+# PipeWire (monitor.passthrough / channel-volumes). Capture the sink itself
+# with PIPEWIRE_PROPS=stream.capture.sink=true instead. Remapped sources like
+# phone_uplink.monitor still work and must keep the monitor path.
+_SINK_CAPTURE_BASES = frozenset(
+    x.strip()
+    for x in os.environ.get(
+        "GSM2COMPUTER_PW_SINK_CAPTURE",
+        "openclaw_bus,gsm_bus",
+    ).split(",")
+    if x.strip()
+)
 
-    Do not substitute the matching sink serial: capture must bind the
-    monitor source. If the source is missing, fail immediately.
+
+def record_target_base(name: str) -> str:
+    """Strip a trailing .monitor so openclaw_bus.monitor -> openclaw_bus."""
+    if name.endswith(".monitor"):
+        return name[: -len(".monitor")]
+    return name
+
+
+def record_uses_sink_capture(name: str) -> bool:
+    """True when pw-record must bind the sink (not its silent .monitor)."""
+    if name.isdigit():
+        return False
+    return record_target_base(name) in _SINK_CAPTURE_BASES
+
+
+async def resolve_pipewire_record_target(name: str) -> str:
+    """pw-record --target wants a source/monitor or sink object.serial.
+
+    Speaker buses listed in GSM2COMPUTER_PW_SINK_CAPTURE (default:
+    openclaw_bus,gsm_bus) resolve to the *sink* serial because their
+    .monitor sources are silent on current PipeWire. Callers must also set
+    stream.capture.sink=true via pipewire_stream_env(..., capture_sink=True).
+    All other names still resolve as sources/monitors only.
     """
     if name.isdigit():
         return name
+    if record_uses_sink_capture(name):
+        base = record_target_base(name)
+        serial = _pactl_index_for_name(await _pactl_short("sinks"), base)
+        if serial is None:
+            raise RuntimeError(
+                f"PipeWire sink-capture target not found: {base} "
+                "(sink missing from pactl list sinks)"
+            )
+        return serial
     serial = _pactl_index_for_name(await _pactl_short("sources"), name)
     if serial is None:
         raise RuntimeError(
@@ -136,11 +176,21 @@ def pw_latency_args() -> list[str]:
     return ["--latency", os.environ.get("GSM2COMPUTER_PW_LATENCY", "20ms")]
 
 
-def pipewire_stream_env(rate: int) -> dict[str, str]:
-    """Force 20 ms quanta in the helper process (PIPEWIRE_LATENCY=period/rate)."""
+def pipewire_stream_env(rate: int, *, capture_sink: bool = False) -> dict[str, str]:
+    """Force 20 ms quanta in the helper process (PIPEWIRE_LATENCY=period/rate).
+
+    When capture_sink is True, also set stream.capture.sink=true so pw-record
+    can record a sink by serial (needed when openclaw_bus.monitor / gsm_bus.monitor
+    are silent).
+    """
     env = os.environ.copy()
     period = max(1, int(rate) // 50)
     env["PIPEWIRE_LATENCY"] = f"{period}/{int(rate)}"
+    if capture_sink:
+        props = (env.get("PIPEWIRE_PROPS") or "").strip()
+        extra = "stream.capture.sink=true"
+        if "stream.capture.sink=" not in props:
+            env["PIPEWIRE_PROPS"] = f"{props} {extra}".strip() if props else extra
     return env
 
 
