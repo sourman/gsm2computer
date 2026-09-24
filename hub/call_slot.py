@@ -71,6 +71,8 @@ class CallSlot:
         self.is_e2e: bool = False
         self.abort = asyncio.Event()
         self.abort_reason: Optional[str] = None
+        # Set by the WS handler: returns DownlinkSendGuard.snapshot() for /health.
+        self.downlink_probe: Optional[Any] = None
 
     @staticmethod
     def path_is_e2e(path: str) -> bool:
@@ -120,6 +122,7 @@ class CallSlot:
         self.path = ""
         self.is_e2e = False
         self.abort_reason = None
+        self.downlink_probe = None
         self.abort.set()
         self.abort = asyncio.Event()
 
@@ -171,7 +174,7 @@ class CallSlot:
                 return None
             return round(now - ts, 3)
 
-        return {
+        out = {
             "busy": self.busy,
             "path": self.path or None,
             "e2e": self.is_e2e,
@@ -181,6 +184,16 @@ class CallSlot:
             "last_uplink_s": _ago(self.last_uplink_at),
             "abort_reason": self.abort_reason,
         }
+        probe = self.downlink_probe
+        if self.busy and probe is not None:
+            try:
+                dl = probe() or {}
+                out["downlink_stalled_s"] = dl.get("stalled_s")
+                out["downlink_max_stall_s"] = dl.get("max_stall_s")
+                out["downlink_dropped_frames"] = dl.get("dropped_frames")
+            except Exception:
+                pass
+        return out
 
 
 

@@ -7,7 +7,7 @@ across restarts. Read-only toward the live call path.
 
 Usage:
   call_end_watch.py              # run forever (systemd)
-  call_end_watch.py --dry-run [--scenario normal|midcall] [--no-post]
+  call_end_watch.py --dry-run [--scenario normal|midcall|gap30] [--no-post]
                                  # one test:true call_ended payload, then exit
 """
 from __future__ import annotations
@@ -45,6 +45,9 @@ DROP_MARGIN_S = float(os.environ.get("GSM2COMPUTER_CALL_END_DROP_MARGIN_S", "10"
 # While hub is busy, ws/uplink silent this long counts as "dead" (start of death
 # is back-dated to now - last_*_s).
 STREAM_DEAD_S = float(os.environ.get("GSM2COMPUTER_CALL_END_STREAM_DEAD_S", "10"))
+# Any mid-call hub/ws gap this long while the phone stays OFFHOOK is a suspected
+# drop even if the Pixel reconnected afterwards (caller heard dead air).
+MID_CALL_GAP_S = float(os.environ.get("GSM2COMPUTER_CALL_END_MID_CALL_GAP_S", "10"))
 STATE_PATH = Path(
     os.environ.get(
         "GSM2COMPUTER_CALL_END_STATE",
@@ -102,6 +105,10 @@ class WatchState:
     ws_dead_at: Optional[float] = None  # ws went silent while hub busy
     uplink_dead_at: Optional[float] = None  # uplink went silent while hub busy
     phone_idle_at: Optional[float] = None  # first IDLE poll after in-call
+    # Longest mid-call hub-not-busy / ws-silent / downlink-stalled gap (seconds),
+    # kept after the hub recovers so a reconnect does not hide the dead air.
+    hub_gap_max_s: float = 0.0
+    downlink_stall_open_s: float = 0.0  # last polled downlink_stalled_s (not persisted)
     last_hub: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
@@ -123,6 +130,7 @@ class WatchState:
             "ws_dead_at": self.ws_dead_at,
             "uplink_dead_at": self.uplink_dead_at,
             "phone_idle_at": self.phone_idle_at,
+            "hub_gap_max_s": self.hub_gap_max_s,
         }
 
     @classmethod
@@ -146,6 +154,7 @@ class WatchState:
         st.ws_dead_at = _ago(data.get("ws_dead_at"))
         st.uplink_dead_at = _ago(data.get("uplink_dead_at"))
         st.phone_idle_at = _ago(data.get("phone_idle_at"))
+        st.hub_gap_max_s = _ago(data.get("hub_gap_max_s")) or 0.0
         return st
 
     def reset_call_observations(self) -> None:
@@ -157,6 +166,8 @@ class WatchState:
         self.ws_dead_at = None
         self.uplink_dead_at = None
         self.phone_idle_at = None
+        self.hub_gap_max_s = 0.0
+        self.downlink_stall_open_s = 0.0
         self.last_hub = {}
 
 
@@ -292,6 +303,11 @@ def _ago(val: Any) -> Optional[float]:
         return None
 
 
+def _note_gap(st: WatchState, gap: Optional[float]) -> None:
+    if gap is not None and gap > st.hub_gap_max_s:
+        st.hub_gap_max_s = round(float(gap), 1)
+
+
 def observe_hub_during_call(
     st: WatchState, health: dict[str, Any], now: Optional[float] = None
 ) -> None:
@@ -308,12 +324,24 @@ def observe_hub_during_call(
     ws = _ago(call.get("last_ws_s"))
     up = _ago(call.get("last_uplink_s"))
     if busy:
+        if st.hub_end_at is not None and st.hub_saw_busy and st.in_call:
+            # Reconnected after a hub-side end: the gap lasted from hub_end_at
+            # until this poll saw the new session (upper bound, <= POLL_S over).
+            _note_gap(st, now - st.hub_end_at)
         st.hub_saw_busy = True
         st.hub_end_at = None  # (re)connected: any earlier end was not final
+        # Only *closed* gaps are noted here; a gap still open at phone IDLE is
+        # measured against the IDLE time in assess_drop (teardown-aware).
+        dl = _ago(call.get("downlink_stalled_s"))
+        if st.in_call and st.downlink_stall_open_s and (dl is None or dl < st.downlink_stall_open_s):
+            _note_gap(st, st.downlink_stall_open_s)  # hub->phone sends resumed
+        st.downlink_stall_open_s = dl or 0.0
         if ws is not None and ws >= STREAM_DEAD_S:
             if st.ws_dead_at is None:
                 st.ws_dead_at = now - ws
         elif ws is not None:
+            if st.ws_dead_at is not None and st.in_call:
+                _note_gap(st, (now - ws) - st.ws_dead_at)  # ws resumed
             st.ws_dead_at = None  # recovered
         if up is not None and up >= STREAM_DEAD_S:
             if st.uplink_dead_at is None:
@@ -451,6 +479,11 @@ def assess_drop(
     st.hub_ended_while_phone_live = hub_end_lead is not None and hub_end_lead >= margin_s
     st.hub_ws_died = ws_lead is not None and ws_lead >= margin_s
     st.hub_uplink_died = up_lead is not None and up_lead >= margin_s
+    # Gap still open at phone IDLE (hub ended / ws silent until the hangup) —
+    # a normal teardown is ~1-2s, far below MID_CALL_GAP_S.
+    for lead in (hub_end_lead, ws_lead):
+        _note_gap(st, lead)
+    gap_max = st.hub_gap_max_s
     reasons = []
     if st.hub_ended_while_phone_live:
         reasons.append("hub_ended_before_phone")
@@ -458,12 +491,16 @@ def assess_drop(
         reasons.append("ws_died_mid_call")
     if st.hub_uplink_died:
         reasons.append("uplink_died_mid_call")
+    if gap_max >= MID_CALL_GAP_S:
+        reasons.append("mid_call_gap")
     return {
         "dropped_suspected": bool(reasons),
         "dropped_reasons": reasons,
         "hub_end_lead_s": hub_end_lead,
         "ws_dead_lead_s": ws_lead,
         "uplink_dead_lead_s": up_lead,
+        "hub_gap_max_s": gap_max,
+        "mid_call_gap_s": MID_CALL_GAP_S,
         "drop_margin_s": margin_s,
         "phone_idle_at_utc": _iso(phone_idle_at),
         "hub_end_at_utc": _iso(hub_end_at),
@@ -506,6 +543,7 @@ def build_payload(
         "dropped_suspected": dropped,
         "dropped_reasons": drop["dropped_reasons"],
         "hub_end_lead_s": drop["hub_end_lead_s"],
+        "hub_gap_max_s": drop["hub_gap_max_s"],
         "hub_health": {
             "ok": health.get("ok"),
             "busy": call.get("busy"),
@@ -528,6 +566,8 @@ def build_payload(
             "hub_end_lead_s": drop["hub_end_lead_s"],
             "ws_dead_lead_s": drop["ws_dead_lead_s"],
             "uplink_dead_lead_s": drop["uplink_dead_lead_s"],
+            "hub_gap_max_s": drop["hub_gap_max_s"],
+            "mid_call_gap_s": drop["mid_call_gap_s"],
             "drop_margin_s": drop["drop_margin_s"],
             "phone_idle_at_utc": drop["phone_idle_at_utc"],
             "hub_end_at_utc": drop["hub_end_at_utc"],
@@ -539,6 +579,7 @@ def build_payload(
             f"call_ended duration_s={duration_s:.0f} "
             f"dropped_suspected={dropped} "
             f"hub_end_lead_s={drop['hub_end_lead_s']} "
+            f"hub_gap_max_s={drop['hub_gap_max_s']} "
             f"call_id={st.call_id or '-'}"
             + (" TEST" if test else "")
         ),
@@ -564,7 +605,7 @@ def fire_call_ended(
         save_state(st)
     LOG.info(
         "fired call_ended test=%s posted=%s duration_s=%.1f call_id=%s dropped=%s "
-        "reasons=%s hub_end_lead_s=%s",
+        "reasons=%s hub_end_lead_s=%s hub_gap_max_s=%s",
         test,
         post,
         duration_s,
@@ -572,6 +613,7 @@ def fire_call_ended(
         payload["dropped_suspected"],
         ",".join(payload["dropped_reasons"]) or "-",
         payload["hub_end_lead_s"],
+        payload["hub_gap_max_s"],
     )
     return payload
 
@@ -728,6 +770,9 @@ def simulate_scenario(name: str, now: Optional[float] = None) -> tuple[WatchStat
               phone's IDLE is seen (teardown).
     midcall — 120s call; hub ws/uplink silent from t=60s while busy, then the
               hub session ends at t=80s; phone stays OFFHOOK until t=120s.
+    gap30   — 120s call; hub session ends at t=40s (e.g. downlink abort /
+              Tailscale blip), Pixel reconnects at t=70s and the call runs
+              normally to the hangup (30s dead air, hub recovered).
     """
     now = time.time() if now is None else now
     t0 = now - 125.0
@@ -742,6 +787,13 @@ def simulate_scenario(name: str, now: Optional[float] = None) -> tuple[WatchStat
     while t < end:
         if name == "normal":
             h = _scenario_health(True, 0.3)
+        elif name == "gap30":
+            if t < t0 + 40:
+                h = _scenario_health(True, 0.3)
+            elif t < t0 + 70:
+                h = _scenario_health(False, t - (t0 + 40))
+            else:
+                h = _scenario_health(True, 0.3)
         elif name == "midcall":
             if t < t0 + 60:
                 h = _scenario_health(True, 0.3)
@@ -755,7 +807,7 @@ def simulate_scenario(name: str, now: Optional[float] = None) -> tuple[WatchStat
         t += POLL_S
     # WS closes 1s before hangup; phone IDLE first seen at t0+121.25.
     st.phone_idle_at = end + POLL_S / 2.0
-    if name == "normal":
+    if name in ("normal", "gap30"):
         final = _scenario_health(False, now - (end - 1.0))
     else:
         final = _scenario_health(False, now - (t0 + 60))
@@ -781,6 +833,7 @@ def dry_run(scenario: str = "normal", post: bool = True) -> int:
                 "dropped_suspected": payload["dropped_suspected"],
                 "dropped_reasons": payload["dropped_reasons"],
                 "hub_end_lead_s": payload["hub_end_lead_s"],
+                "hub_gap_max_s": payload["hub_gap_max_s"],
                 "hub_during_call": {
                     k: v for k, v in payload["hub_during_call"].items() if k != "last_sample"
                 },
@@ -801,9 +854,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     parser.add_argument(
         "--scenario",
-        choices=("normal", "midcall"),
+        choices=("normal", "midcall", "gap30"),
         default="normal",
-        help="dry-run scenario: normal hangup (expect false) or mid-call hub death (expect true)",
+        help="dry-run scenario: normal hangup (expect false) or mid-call hub death (expect true) "
+        "or a 30s mid-call gap then reconnect (expect true)",
     )
     parser.add_argument(
         "--no-post",

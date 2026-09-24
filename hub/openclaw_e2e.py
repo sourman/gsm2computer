@@ -87,13 +87,19 @@ class E2EResult:
     tap_id: Optional[str] = None
     error: Optional[str] = None
     dc_types: list[str] = field(default_factory=list)
+    responses: int = 0  # distinct replies with transcript
+    responses_created: int = 0
+    truncations: int = 0  # conversation.item.truncated (barge-in)
+    speech_stops: int = 0  # input_audio_buffer.speech_stopped (user turns)
 
     def summary(self) -> str:
         status = "PASS" if self.ok else "FAIL"
         return (
             f"{status} step={self.step} lat={self.latency_s:.1f}s "
             f"spk={self.spk_peak:.3f} dl={self.downlink_peak:.3f} "
-            f"unforced={self.triggered_unforced} transcript={self.transcript[:80]!r} "
+            f"unforced={self.triggered_unforced} replies={self.responses_created} "
+            f"truncated={self.truncations} turns={self.speech_stops} "
+            f"transcript={self.transcript[:80]!r} "
             f"err={self.error!r}"
         )
 
@@ -229,6 +235,73 @@ def synthesize_prompt_pcm(text: str, rate: int = PCM_RATE) -> bytes:
     return samples.tobytes()
 
 
+UPLINK_FRAME_S = 0.02
+UPLINK_TAIL_S = float(os.environ.get("GSM2COMPUTER_E2E_TAIL_SILENCE_S", "0.3"))
+REAL_CALL_CHECK_S = 0.5
+REPLY_DONE_WAIT_S = float(os.environ.get("GSM2COMPUTER_E2E_REPLY_DONE_WAIT_S", "10"))
+
+
+def trailing_silence(rate: int, seconds: float = UPLINK_TAIL_S) -> list[bytes]:
+    """~300 ms of zero frames so pw-cat/VAD see a clean end of speech."""
+    frame = b"\x00\x00" * max(1, int(rate * UPLINK_FRAME_S))
+    return [frame] * max(0, int(round(seconds / UPLINK_FRAME_S)))
+
+
+async def _real_call_holding_async() -> bool:
+    try:
+        return bool(await asyncio.to_thread(real_call_holding))
+    except Exception:
+        return False
+
+
+async def paced_uplink(
+    ws: Any,
+    chunks: list[bytes],
+    *,
+    rate: int = PCM_RATE,
+    frame_s: float = UPLINK_FRAME_S,
+    check_s: float = REAL_CALL_CHECK_S,
+    holding=_real_call_holding_async,
+    clock=time.monotonic,
+    sleep=asyncio.sleep,
+) -> bool:
+    """Send 20 ms frames against a fixed clock. Returns True if a real call preempted.
+
+    The real-call check runs in a background thread every ``check_s`` and is
+    never awaited inside the frame loop.
+    """
+    t0 = clock()
+    check: Optional[asyncio.Task] = None
+    last_check = -1e9
+    try:
+        for i, chunk in enumerate(chunks):
+            now = clock()
+            if check is not None and check.done():
+                if check.result():
+                    return True
+                check = None
+            if check is None and now - last_check >= check_s:
+                last_check = now
+                check = asyncio.ensure_future(holding())
+            await ws.send(
+                json.dumps(
+                    {
+                        "type": "input_audio_buffer.append",
+                        "audio": base64.b64encode(chunk).decode("ascii"),
+                        "format": "audio/pcm",
+                        "rate": rate,
+                    }
+                )
+            )
+            delay = t0 + (i + 1) * frame_s - clock()
+            if delay > 0:
+                await sleep(delay)
+        return False
+    finally:
+        if check is not None and not check.done():
+            check.cancel()
+
+
 def _pcm_chunks(pcm: bytes, rate: int, frame_ms: int = 20) -> list[bytes]:
     frame = rate * 2 * frame_ms // 1000
     if frame <= 0:
@@ -265,16 +338,26 @@ async def _cdp_page_ws() -> str:
 
 DC_HOOK_JS = r"""
 (() => {
-  window.__gsm2E2E = {types: [], transcripts: [], responseCreated: 0, forced: false};
+  window.__gsm2E2E = {types: [], byResp: {}, order: [], responseCreated: 0, forced: false};
   const push = (j) => {
     try {
       const t = j.type || "?";
       window.__gsm2E2E.types.push(t);
       if (t === "response.created") window.__gsm2E2E.responseCreated += 1;
-      if (t === "response.output_audio_transcript.delta" && j.delta)
-        window.__gsm2E2E.transcripts.push(String(j.delta));
-      if (t === "response.output_audio_transcript.done" && j.transcript)
-        window.__gsm2E2E.transcripts.push(String(j.transcript));
+      // One entry per response: deltas accumulate, .done replaces them
+      // (pushing both double-counted every reply: "Hi Modi!Hi Modi!").
+      const E = window.__gsm2E2E;
+      E.byResp = E.byResp || {};
+      E.order = E.order || [];
+      const key = String(j.response_id || j.item_id || "_");
+      if (t === "response.output_audio_transcript.delta" && j.delta) {
+        if (!(key in E.byResp)) { E.byResp[key] = ""; E.order.push(key); }
+        E.byResp[key] += String(j.delta);
+      }
+      if (t === "response.output_audio_transcript.done" && j.transcript) {
+        if (!(key in E.byResp)) E.order.push(key);
+        E.byResp[key] = String(j.transcript);
+      }
     } catch (e) {}
   };
   const attach = (ch) => {
@@ -316,7 +399,8 @@ DC_SNAP_JS = r"""
   const e = window.__gsm2E2E || {};
   return {
     types: (e.types || []).slice(-80),
-    transcript: (e.transcripts || []).join(""),
+    transcript: (e.order || []).map((k) => (e.byResp || {})[k] || "").join(" | "),
+    responses: (e.order || []).length,
     responseCreated: e.responseCreated || 0,
     dcState: e.dc ? e.dc.readyState : null,
   };
@@ -338,10 +422,20 @@ async def _attach_existing_dc() -> None:
       const t = j.type || "?";
       window.__gsm2E2E.types.push(t);
       if (t === "response.created") window.__gsm2E2E.responseCreated += 1;
-      if (t === "response.output_audio_transcript.delta" && j.delta)
-        window.__gsm2E2E.transcripts.push(String(j.delta));
-      if (t === "response.output_audio_transcript.done" && j.transcript)
-        window.__gsm2E2E.transcripts.push(String(j.transcript));
+      // One entry per response: deltas accumulate, .done replaces them
+      // (pushing both double-counted every reply: "Hi Modi!Hi Modi!").
+      const E = window.__gsm2E2E;
+      E.byResp = E.byResp || {};
+      E.order = E.order || [];
+      const key = String(j.response_id || j.item_id || "_");
+      if (t === "response.output_audio_transcript.delta" && j.delta) {
+        if (!(key in E.byResp)) { E.byResp[key] = ""; E.order.push(key); }
+        E.byResp[key] += String(j.delta);
+      }
+      if (t === "response.output_audio_transcript.done" && j.transcript) {
+        if (!(key in E.byResp)) E.order.push(key);
+        E.byResp[key] = String(j.transcript);
+      }
     } catch (e) {}
   };
   const attach = (ch) => {
@@ -500,23 +594,13 @@ async def run_once(step: str = "initial", *, allow_force: bool = False) -> E2ERe
                     }
                 )
             )
-            # uplink TTS
-            for chunk in chunks:
-                if real_call_holding():
-                    result.aborted_for_real_call = True
-                    result.error = "preempted during uplink"
-                    break
-                await ws.send(
-                    json.dumps(
-                        {
-                            "type": "input_audio_buffer.append",
-                            "audio": base64.b64encode(chunk).decode("ascii"),
-                            "format": "audio/pcm",
-                            "rate": PCM_RATE,
-                        }
-                    )
-                )
-                await asyncio.sleep(0.02)
+            # uplink TTS at 1x real time. The old loop did a blocking /health
+            # call + sleep(0.02) per 20 ms chunk (~2.2x slow), so pw-cat
+            # underran every other quantum and OpenClaw heard a stretched,
+            # choppy prompt (early turn end, truncation, double replies).
+            if await paced_uplink(ws, chunks + trailing_silence(PCM_RATE)):
+                result.aborted_for_real_call = True
+                result.error = "preempted during uplink"
             if result.aborted_for_real_call:
                 result.latency_s = time.monotonic() - t0
                 return result
@@ -525,6 +609,7 @@ async def run_once(step: str = "initial", *, allow_force: bool = False) -> E2ERe
             deadline = min(t0 + BUDGET_S - 3.0, time.monotonic() + 16.0)
             triggered = False
             transcript = ""
+            responses = 0
             types: list[str] = []
             while time.monotonic() < deadline:
                 if real_call_holding():
@@ -536,8 +621,22 @@ async def run_once(step: str = "initial", *, allow_force: bool = False) -> E2ERe
                 transcript = str(snap.get("transcript") or "")
                 if int(snap.get("responseCreated") or 0) > 0:
                     triggered = True
-                    # give audio a moment to hit the bus
-                    await asyncio.sleep(2.0)
+                    # Let the reply finish (response.done) so we can judge one
+                    # clean reply vs truncation/double replies; bounded wait.
+                    done_by = time.monotonic() + REPLY_DONE_WAIT_S
+                    while time.monotonic() < done_by:
+                        await asyncio.sleep(0.4)
+                        snap = await snap_dc()
+                        types = list(snap.get("types") or [])
+                        transcript = str(snap.get("transcript") or "")
+                        if "response.done" in types:
+                            break
+                    responses = int(snap.get("responses") or 0)
+                    await asyncio.sleep(0.8)
+                    snap = await snap_dc()
+                    types = list(snap.get("types") or [])
+                    transcript = str(snap.get("transcript") or "")
+                    responses = int(snap.get("responses") or responses)
                     break
                 await asyncio.sleep(0.4)
 
@@ -559,6 +658,10 @@ async def run_once(step: str = "initial", *, allow_force: bool = False) -> E2ERe
         result.transcript = transcript.strip()
         result.triggered_unforced = triggered and not result.forced_used
         result.dc_types = types[-40:]
+        result.responses = responses
+        result.responses_created = types.count("response.created")
+        result.truncations = types.count("conversation.item.truncated")
+        result.speech_stops = types.count("input_audio_buffer.speech_stopped")
         result.latency_s = time.monotonic() - t0
 
         if result.aborted_for_real_call:

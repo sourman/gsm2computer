@@ -18,6 +18,12 @@ from pathlib import Path
 from typing import Any, Optional, Tuple
 
 from alert_webhook import post_system_alert
+from ws_backpressure import (
+    DownlinkSendGuard,
+    reconnect_should_supersede,
+    transport_buffered,
+    writer_closing,
+)
 from call_slot import (
     CallSlot,
     CallWatchdogConfig,
@@ -88,6 +94,9 @@ WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 current_mode: Optional[str] = None
 WS_SEND_TIMEOUT_S = float(os.environ.get("GSM2COMPUTER_WS_SEND_TIMEOUT_S", "5"))
+WS_PING_SKIP_BACKLOG_BYTES = 256 * 1024
+SUPERSEDED_REASON = "superseded by Pixel reconnect"
+RECONNECT_TAKEOVER_WAIT_S = float(os.environ.get("GSM2COMPUTER_RECONNECT_TAKEOVER_WAIT_S", "8"))
 active_bridge: Optional["PipewireBridge"] = None
 active_ws_writer: Optional[asyncio.StreamWriter] = None
 active_openclaw: Optional[Any] = None
@@ -171,7 +180,7 @@ def ws_accept_key(sec_key: str) -> str:
     return base64.b64encode(digest).decode("ascii")
 
 
-async def ws_send_text(writer: asyncio.StreamWriter, text: str) -> None:
+def ws_encode_text(text: str) -> bytes:
     data = text.encode("utf-8")
     length = len(data)
     if length < 126:
@@ -180,15 +189,37 @@ async def ws_send_text(writer: asyncio.StreamWriter, text: str) -> None:
         header = bytes([0x81, 126]) + length.to_bytes(2, "big")
     else:
         header = bytes([0x81, 127]) + length.to_bytes(8, "big")
-    writer.write(header + data)
-    await asyncio.wait_for(writer.drain(), timeout=WS_SEND_TIMEOUT_S)
+    return header + data
+
+
+async def _soft_drain(writer: asyncio.StreamWriter, timeout: float = WS_SEND_TIMEOUT_S) -> bool:
+    """Wait for the transport to flush, but never fail the call on a slow link.
+
+    A drain timeout means the peer is not ACKing (e.g. Tailscale hiccup); the
+    bytes stay queued. Dead sockets are detected by DownlinkSendGuard (no
+    progress for GSM2COMPUTER_WS_DOWNLINK_DEAD_S) and the ws-idle watchdog.
+    Connection errors still raise.
+    """
+    try:
+        await asyncio.wait_for(writer.drain(), timeout=timeout)
+        return True
+    except asyncio.TimeoutError:
+        LOG.warning("websocket drain slow (>%.0fs); keeping call, data queued", timeout)
+        return False
+
+
+async def ws_send_text(writer: asyncio.StreamWriter, text: str) -> bool:
+    writer.write(ws_encode_text(text))
+    return await _soft_drain(writer)
 
 
 async def ws_send_pong(writer: asyncio.StreamWriter, payload: bytes = b"") -> None:
+    # Never await drain here: this runs inside the uplink read loop, and a
+    # stalled downlink must not stop us reading the Pixel's frames.
     length = len(payload)
     header = bytes([0x8A, length])
-    writer.write(header + payload)
-    await asyncio.wait_for(writer.drain(), timeout=WS_SEND_TIMEOUT_S)
+    if not writer_closing(writer):
+        writer.write(header + payload)
 
 
 async def ws_send_ping(writer: asyncio.StreamWriter, payload: bytes = b"hub") -> None:
@@ -196,8 +227,11 @@ async def ws_send_ping(writer: asyncio.StreamWriter, payload: bytes = b"hub") ->
     if length > 125:
         raise ValueError("ping payload too long")
     header = bytes([0x89, length])
-    writer.write(header + payload)
-    await asyncio.wait_for(writer.drain(), timeout=WS_SEND_TIMEOUT_S)
+    if writer_closing(writer):
+        raise ConnectionResetError("websocket transport closing")
+    # Non-blocking: during a stall the ping just queues (skip if backlog huge).
+    if transport_buffered(writer) < WS_PING_SKIP_BACKLOG_BYTES:
+        writer.write(header + payload)
 
 
 async def ws_read_frame(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> Optional[str]:
@@ -456,6 +490,8 @@ class PipewireBridge:
         self._out_ratecv: Any = None
         self._in_src_rate = DEFAULT_CLIENT_RATE
         self._out_dst_rate = DEFAULT_CLIENT_RATE
+        self.downlink_guard = DownlinkSendGuard()
+        self._stall_logged_recovery = True
 
     def _track_helper(self, proc: asyncio.subprocess.Process, label: str) -> None:
         self._helper_tasks.append(asyncio.create_task(self._log_helper_stderr(proc, label)))
@@ -669,21 +705,35 @@ class PipewireBridge:
                 "rate": out_rate,
                 "channels": {"l": energy_l, "r": energy_r},
             }
-            try:
-                await ws_send_text(ws_writer, json.dumps(event))
-            except asyncio.TimeoutError:
-                # Pixel not reading / Tailscale half-open: drain stalls, which
-                # also blocks ping/pong on the same StreamWriter and freezes
-                # last_ws → false "websocket idle" while the phone call lives.
-                LOG.error(
-                    "websocket downlink send stalled (>%ss); aborting call",
-                    WS_SEND_TIMEOUT_S,
-                )
-                self._signal_abort(
-                    f"websocket downlink send stalled (>{WS_SEND_TIMEOUT_S:.0f}s)"
-                )
+            # Never await drain here (a Tailscale hiccup stalls it for the whole
+            # outage and used to abort the call after 5 s). Queue while the
+            # backlog is small, drop stale frames beyond it, and only give up
+            # when queued bytes make no progress for DOWNLINK_DEAD_S.
+            guard = self.downlink_guard
+            if writer_closing(ws_writer):
                 break
-            except (ConnectionError, BrokenPipeError, asyncio.IncompleteReadError):
+            guard.observe(transport_buffered(ws_writer))
+            dead = guard.dead_reason()
+            if dead:
+                LOG.error("%s; aborting call %s", dead, guard.snapshot())
+                self._signal_abort(dead)
+                break
+            frame = ws_encode_text(json.dumps(event))
+            if not guard.admit(len(frame)):
+                if guard.drop_run == 1 or guard.drop_run % 250 == 0:
+                    LOG.warning(
+                        "downlink backlog: dropping stale frames (keeping call) %s",
+                        guard.snapshot(),
+                    )
+                continue
+            if guard.stall_started_at is None and guard.max_stall_s >= 1.0 and not self._stall_logged_recovery:
+                self._stall_logged_recovery = True
+                LOG.info("downlink recovered after stall %s", guard.snapshot())
+            elif guard.stall_started_at is not None:
+                self._stall_logged_recovery = False
+            try:
+                ws_writer.write(frame)
+            except (ConnectionError, BrokenPipeError, RuntimeError):
                 break
         if self._record.returncode is None:
             await self._record.wait()
@@ -806,10 +856,11 @@ async def _watch_live_call(
             reason,
             slot.snapshot(now),
         )
-        post_system_alert(
-            f"call watchdog abort: {reason}",
-            e2e=bool(getattr(slot, "is_e2e", False) or CallSlot.path_is_e2e(getattr(slot, "path", "") or "")),
-        )
+        if reason != SUPERSEDED_REASON:
+            post_system_alert(
+                f"call watchdog abort: {reason}",
+                e2e=bool(getattr(slot, "is_e2e", False) or CallSlot.path_is_e2e(getattr(slot, "path", "") or "")),
+            )
         try:
             await ws_send_close(writer, 1011, reason)
         except (ConnectionError, BrokenPipeError, OSError) as exc:
@@ -1124,6 +1175,27 @@ async def handle_websocket(
                 writer.write(b"HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n")
                 await writer.drain()
                 return
+        elif live_call.busy and reconnect_should_supersede(live_call.snapshot()):
+            # The Pixel only opens a new socket after it gave up on the old one
+            # (e.g. Tailscale hiccup). Retire the stale session and let this
+            # socket take the call instead of 409-ing the reconnect.
+            LOG.warning(
+                "Pixel reconnect supersedes stale call session %s", live_call.snapshot()
+            )
+            live_call.abort_call(SUPERSEDED_REASON)
+            deadline = time.monotonic() + RECONNECT_TAKEOVER_WAIT_S
+            while (live_call.busy or active_bridge is not None) and time.monotonic() < deadline:
+                await asyncio.sleep(0.1)
+            if live_call.busy or active_bridge is not None:
+                LOG.warning(
+                    "stale session did not release in %.0fs; rejecting reconnect %s",
+                    RECONNECT_TAKEOVER_WAIT_S,
+                    live_call.snapshot(),
+                )
+                writer.write(b"HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n")
+                await writer.drain()
+                return
+            LOG.info("stale session released; Pixel reconnect re-attaching to the call")
         elif live_call.busy or active_bridge is not None:
             LOG.warning(
                 "rejecting websocket: call already in progress %s",
@@ -1197,6 +1269,7 @@ async def handle_websocket(
             tap=tap,
             on_abort=live_call.abort_call,
         )
+        live_call.downlink_probe = bridge.downlink_guard.snapshot
         call_watchdog_task = asyncio.create_task(_watch_live_call(live_call, writer, bridge))
         if not loopback and OPENCLAW_TALK_MODE == "webrtc-ui":
             if OpenClawTalkUI is None or get_talk_ui is None:
