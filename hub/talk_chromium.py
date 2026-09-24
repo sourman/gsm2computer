@@ -64,6 +64,24 @@ HOOK_JS = r"""
   Wrapped.prototype = Orig.prototype;
   Object.setPrototypeOf(Wrapped, Orig);
   window.RTCPeerConnection = Wrapped;
+  // Chromium/WebRTC AGC was observed lowering Pulse phone_uplink.monitor
+  // (monitor.channel-volumes=true). Disable auto gain on capture constraints.
+  try {
+    const md = navigator.mediaDevices;
+    if (md && typeof md.getUserMedia === "function" && !window.__gsm2GumPatched) {
+      const origGum = md.getUserMedia.bind(md);
+      md.getUserMedia = (constraints) => {
+        const c = constraints ? {...constraints} : {};
+        if (c.audio === undefined || c.audio === true) {
+          c.audio = {autoGainControl: false, echoCancellation: true, noiseSuppression: true};
+        } else if (c.audio && typeof c.audio === "object") {
+          c.audio = {...c.audio, autoGainControl: false};
+        }
+        return origGum(c);
+      };
+      window.__gsm2GumPatched = true;
+    }
+  } catch (e) {}
   window.__gsm2TalkHook = true;
   return "hooked";
 })()
@@ -283,6 +301,8 @@ def chromium_args(url: str) -> list[str]:
         "--hide-crash-restore-bubble",
         "--disable-infobars",
         "--ozone-platform=x11",
+        # Reduce Chromium adjusting Pulse capture/source volumes via WebRTC APM.
+        "--disable-features=WebRtcAllowInputVolumeAdjustment",
         url,
     ]
 
@@ -386,6 +406,31 @@ class CdpSession:
             await self._ws.close()
         except Exception:
             pass
+
+
+
+async def pin_phone_uplink_volume() -> None:
+    """Force phone_uplink (+ monitor) to 100% — Chromium AGC drifts it down."""
+    for kind, target in (
+        ("sink", PHONE_UPLINK_SINK),
+        ("source", PHONE_UPLINK_MONITOR),
+    ):
+        cmd = ["pactl", f"set-{kind}-volume", target, "100%"]
+        rc, out, err = await _run_captured(
+            cmd,
+            TOOL_TIMEOUT_S,
+            " ".join(cmd),
+        )
+        if rc != 0:
+            LOG.warning(
+                "pin %s volume %s failed rc=%s err=%s",
+                kind,
+                target,
+                rc,
+                (err or out)[:160],
+            )
+        else:
+            LOG.info("pinned %s volume %s to 100%%", kind, target)
 
 
 class OpenClawTalkUI:
@@ -797,6 +842,7 @@ class OpenClawTalkUI:
             )
             if capture_ok and playback_ok and not bad_capture:
                 LOG.info("chromium pulse bind ok: %s", last)
+                await pin_phone_uplink_volume()
                 return
             if bad_capture:
                 LOG.warning("chromium capture on the wrong source; relinking (%s)", last)

@@ -42,6 +42,10 @@ export PULSE_SOURCE PULSE_SINK
 
 mkdir -p "$PROFILE"
 
+# Pin uplink volumes before Chromium opens the capture (AGC drifts them down).
+pactl set-sink-volume phone_uplink 100% 2>/dev/null || true
+pactl set-source-volume "$PULSE_SOURCE" 100% 2>/dev/null || true
+
 echo "talk chromium DISPLAY=$DISPLAY PULSE_SOURCE=$PULSE_SOURCE PULSE_SINK=$PULSE_SINK profile=$PROFILE"
 
 exec "$CHROMIUM_BIN" \
@@ -56,4 +60,5 @@ exec "$CHROMIUM_BIN" \
   --hide-crash-restore-bubble \
   --disable-infobars \
   --ozone-platform=x11 \
+  --disable-features=WebRtcAllowInputVolumeAdjustment \
   "$URL"
