@@ -21,3 +21,9 @@ create_sink openclaw_bus OpenClaw_Bus
 create_sink phone_uplink Phone_Uplink
 create_sink whatsapp_bus WhatsApp_Bus
 create_sink telegram_bus Telegram_Bus
+
+# Keep phone_uplink at unity gain. Chromium/WebRTC AGC otherwise drifts
+# phone_uplink.monitor down (seen at 71% / -9 dB) via monitor.channel-volumes.
+pactl set-sink-volume phone_uplink 100% 2>/dev/null || true
+pactl set-source-volume phone_uplink.monitor 100% 2>/dev/null || true
+
