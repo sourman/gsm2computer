@@ -1229,6 +1229,17 @@ async def handle_websocket(
                 await fail_call_handshake(writer, f"openclaw pipewire handshake failed: {exc}")
                 return
 
+        if openclaw_bridge is not None and OPENCLAW_TALK_MODE == "webrtc-ui":
+            # Start Talk + re-link the mic before pw-cat/pw-record so any brief
+            # graph settle is inaudible on the phone. Do not restart the
+            # loopback unit after uplink is live (that was the start-of-call cut).
+            try:
+                await openclaw_bridge.start_talk()
+                LOG.info("openclaw talk ready before phone uplink (mode=%s)", OPENCLAW_TALK_MODE)
+            except Exception as exc:
+                await fail_call_handshake(writer, f"openclaw talk session failed: {exc}")
+                return
+
         try:
             await bridge.start(writer, monitor=downlink_monitor, record_downlink=not loopback)
         except (PipewireLinkError, RuntimeError) as exc:
@@ -1251,7 +1262,7 @@ async def handle_websocket(
                 2,
             )
 
-        if openclaw_bridge is not None:
+        if openclaw_bridge is not None and OPENCLAW_TALK_MODE != "webrtc-ui":
             try:
                 await openclaw_bridge.start_talk()
                 LOG.info("openclaw talk ready for session.updated (mode=%s)", OPENCLAW_TALK_MODE)

@@ -126,3 +126,6 @@ non-silent `openclaw-spk` + `gsm-downlink`, and a non-empty transcript.
 `phone_uplink.monitor` can be silent on PipeWire 1.4 null sinks. Talk uses
 `openclaw_phone_mic` (pw-loopback sink-capture of `phone_uplink`), selected by
 label in the Control UI gUM hook. Unit: `gsm2computer-openclaw-phone-mic.service`.
+After Talk binds, the hub **pw-link**s `phone_uplink` → `input.openclaw_phone_mic`
+without restarting the loopback unit or reloading Control UI (a unit restart
+while Chromium holds the source was an audible cut at call start).
