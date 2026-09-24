@@ -173,6 +173,33 @@ class CallSlot:
         }
 
 
+async def ensure_released_after_abort(
+    slot: "CallSlot",
+    reason: str,
+    *,
+    wait_s: float = 5.0,
+) -> bool:
+    """Abort a live call, then force-release if the same claim is still held.
+
+    Prefer the WebSocket handler's ``finally`` path so PipeWire/Talk cleanup
+    runs. When that path is wedged (dead peer, stuck bridge stop, etc.),
+    ``abort_call`` alone leaves ``busy=True``. After a short wait, release the
+    *same* claim (matched by ``claimed_at``) so a newer dial is not clobbered.
+
+    Returns True if this function called ``release()``.
+    """
+    if not slot.busy:
+        return False
+    claimed_at = slot.claimed_at
+    slot.abort_call(reason)
+    if wait_s > 0:
+        await asyncio.sleep(wait_s)
+    if slot.busy and slot.claimed_at is not None and slot.claimed_at == claimed_at:
+        slot.release()
+        return True
+    return False
+
+
 async def wait_or_abort(awaitable, abort: asyncio.Event):
     """Return awaitable's result, or None if abort fires first."""
     read_task = asyncio.ensure_future(awaitable)

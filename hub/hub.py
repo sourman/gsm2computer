@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Optional, Tuple
 
 from alert_webhook import post_system_alert
-from call_slot import CallSlot, CallWatchdogConfig, wait_or_abort
+from call_slot import CallSlot, CallWatchdogConfig, ensure_released_after_abort, wait_or_abort
 from call_tap import RECORD_DIR, CallTap
 from portal_http import EventBus, PortalApp
 from portal_sms import ingest_inbound_sms
@@ -785,7 +785,46 @@ async def _watch_live_call(
             writer.close()
         except Exception as exc:
             LOG.warning("call watchdog could not close ws writer: %s", exc)
+        # finally may never run (dead GSM peer); do not await here — this task
+        # is cancelled from the WS finally. Schedule an independent ensure.
+        asyncio.create_task(
+            _ensure_call_slot_freed(slot, reason, wait_s=5.0),
+            name="call-slot-ensure-release",
+        )
         return
+
+
+async def _ensure_call_slot_freed(
+    slot: CallSlot,
+    reason: str,
+    *,
+    wait_s: float = 5.0,
+) -> None:
+    """After abort, force-release the same claim if the WS finally path never ran."""
+    global active_bridge
+    claimed_at = slot.claimed_at
+    bridge_ref = active_bridge
+    try:
+        if wait_s > 0:
+            await asyncio.sleep(wait_s)
+        if slot.busy and slot.claimed_at is not None and slot.claimed_at == claimed_at:
+            LOG.error(
+                "force-release CallSlot after abort wait: %s %s",
+                reason,
+                slot.snapshot(),
+            )
+            slot.release()
+            post_system_alert(f"call slot force-release after abort: {reason}")
+        # Stale bridge ref also 409s new dials even when busy=false.
+        # Clear the global first so a hung bridge.stop() cannot keep rejecting dials.
+        if bridge_ref is not None and active_bridge is bridge_ref:
+            active_bridge = None
+            try:
+                await asyncio.wait_for(bridge_ref.stop(), timeout=5.0)
+            except Exception:
+                LOG.warning("ensure-release bridge stop failed", exc_info=True)
+    except Exception:
+        LOG.exception("ensure call slot freed failed")
 
 
 async def _watch_webrtc_ui_talk(openclaw: Any, bridge: "PipewireBridge") -> None:
@@ -1267,18 +1306,44 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             else:
                 writer.write(json_response(200, {"ok": True, "sms": log_entry}))
         elif method == "POST" and path == "/admin/call/release":
-            # Emergency CallSlot force-release. Prefer abort so WS finally cleans
-            # PipeWire/Talk; if no bridge is attached, release the lock directly.
+            # Emergency CallSlot force-release. Abort so WS finally can clean
+            # PipeWire/Talk; if still busy after a short wait (wedged handler /
+            # dead peer with active_bridge still set), force-release the slot.
+            global active_bridge
             snap = live_call.snapshot()
+            bridge_ref = active_bridge
+            forced = False
             if live_call.busy:
-                live_call.abort_call("admin force-release")
-                if active_bridge is None:
-                    live_call.release()
-                post_system_alert(
-                    f"admin force-release CallSlot (was busy={snap.get('busy')} age_s={snap.get('age_s')})"
+                forced = await ensure_released_after_abort(
+                    live_call, "admin force-release", wait_s=5.0
                 )
-                LOG.error("admin force-release CallSlot %s -> %s", snap, live_call.snapshot())
-            writer.write(json_response(200, {"ok": True, "call": live_call.snapshot(), "before": snap}))
+                if bridge_ref is not None and active_bridge is bridge_ref:
+                    active_bridge = None
+                    try:
+                        await asyncio.wait_for(bridge_ref.stop(), timeout=5.0)
+                    except Exception:
+                        LOG.warning("admin release bridge stop failed", exc_info=True)
+                post_system_alert(
+                    f"admin force-release CallSlot (was busy={snap.get('busy')} "
+                    f"age_s={snap.get('age_s')} forced={forced})"
+                )
+                LOG.error(
+                    "admin force-release CallSlot forced=%s %s -> %s",
+                    forced,
+                    snap,
+                    live_call.snapshot(),
+                )
+            writer.write(
+                json_response(
+                    200,
+                    {
+                        "ok": True,
+                        "call": live_call.snapshot(),
+                        "before": snap,
+                        "forced": forced,
+                    },
+                )
+            )
         else:
             writer.write(json_response(404, {"ok": False, "error": "not found"}))
     except Exception:
@@ -1304,13 +1369,13 @@ async def _reap_stuck_call_slot() -> None:
                 continue
             snap = live_call.snapshot(now)
             LOG.error("call slot reaper force-release: %s %s", reason, snap)
-            live_call.abort_call(reason)
-            # If the WS handler is wedged, abort alone may not run finally — release.
-            await asyncio.sleep(5.0)
-            if live_call.busy:
-                live_call.release()
+            forced = await ensure_released_after_abort(live_call, reason, wait_s=5.0)
+            if forced:
                 post_system_alert(f"call slot reaper force-release: {reason}")
-                LOG.error("call slot reaper released lock after abort wait %s", live_call.snapshot())
+                LOG.error(
+                    "call slot reaper released lock after abort wait %s",
+                    live_call.snapshot(),
+                )
         except Exception:
             LOG.exception("call slot reaper error")
 
