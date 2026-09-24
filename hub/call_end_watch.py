@@ -7,7 +7,8 @@ across restarts. Read-only toward the live call path.
 
 Usage:
   call_end_watch.py              # run forever (systemd)
-  call_end_watch.py --dry-run    # POST one test:true call_ended payload and exit
+  call_end_watch.py --dry-run [--scenario normal|midcall] [--no-post]
+                                 # one test:true call_ended payload, then exit
 """
 from __future__ import annotations
 
@@ -38,6 +39,12 @@ HUB_HTTP = os.environ.get("GSM2COMPUTER_E2E_HUB") or os.environ.get(
 POLL_S = float(os.environ.get("GSM2COMPUTER_CALL_END_POLL_S", "2.5"))
 MIN_DURATION_S = float(os.environ.get("GSM2COMPUTER_CALL_END_MIN_S", "5"))
 IDLE_CONFIRM_POLLS = int(os.environ.get("GSM2COMPUTER_CALL_END_IDLE_POLLS", "2"))
+# dropped_suspected margins. A hub/ws/uplink end within this many seconds of the
+# phone going IDLE is normal teardown, not a drop.
+DROP_MARGIN_S = float(os.environ.get("GSM2COMPUTER_CALL_END_DROP_MARGIN_S", "10"))
+# While hub is busy, ws/uplink silent this long counts as "dead" (start of death
+# is back-dated to now - last_*_s).
+STREAM_DEAD_S = float(os.environ.get("GSM2COMPUTER_CALL_END_STREAM_DEAD_S", "10"))
 STATE_PATH = Path(
     os.environ.get(
         "GSM2COMPUTER_CALL_END_STATE",
@@ -90,6 +97,11 @@ class WatchState:
     hub_ended_while_phone_live: bool = False
     hub_ws_died: bool = False
     hub_uplink_died: bool = False
+    # Wall-clock (time.time()) observations; persisted so a restart keeps them.
+    hub_end_at: Optional[float] = None  # hub session end (last ws activity)
+    ws_dead_at: Optional[float] = None  # ws went silent while hub busy
+    uplink_dead_at: Optional[float] = None  # uplink went silent while hub busy
+    phone_idle_at: Optional[float] = None  # first IDLE poll after in-call
     last_hub: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
@@ -107,6 +119,10 @@ class WatchState:
             "hub_ended_while_phone_live": self.hub_ended_while_phone_live,
             "hub_ws_died": self.hub_ws_died,
             "hub_uplink_died": self.hub_uplink_died,
+            "hub_end_at": self.hub_end_at,
+            "ws_dead_at": self.ws_dead_at,
+            "uplink_dead_at": self.uplink_dead_at,
+            "phone_idle_at": self.phone_idle_at,
         }
 
     @classmethod
@@ -126,7 +142,22 @@ class WatchState:
         st.hub_ended_while_phone_live = bool(data.get("hub_ended_while_phone_live"))
         st.hub_ws_died = bool(data.get("hub_ws_died"))
         st.hub_uplink_died = bool(data.get("hub_uplink_died"))
+        st.hub_end_at = _ago(data.get("hub_end_at"))
+        st.ws_dead_at = _ago(data.get("ws_dead_at"))
+        st.uplink_dead_at = _ago(data.get("uplink_dead_at"))
+        st.phone_idle_at = _ago(data.get("phone_idle_at"))
         return st
+
+    def reset_call_observations(self) -> None:
+        self.hub_saw_busy = False
+        self.hub_ended_while_phone_live = False
+        self.hub_ws_died = False
+        self.hub_uplink_died = False
+        self.hub_end_at = None
+        self.ws_dead_at = None
+        self.uplink_dead_at = None
+        self.phone_idle_at = None
+        self.last_hub = {}
 
 
 def setup_logging() -> None:
@@ -261,20 +292,37 @@ def _ago(val: Any) -> Optional[float]:
         return None
 
 
-def observe_hub_during_call(st: WatchState, health: dict[str, Any]) -> None:
+def observe_hub_during_call(
+    st: WatchState, health: dict[str, Any], now: Optional[float] = None
+) -> None:
+    """Record *when* the hub side ended/stalled while the phone is still in-call.
+
+    Only timestamps are recorded here; whether that counts as a drop is decided
+    at phone IDLE by ``assess_drop`` (end within DROP_MARGIN_S = teardown).
+    """
+    now = time.time() if now is None else now
+    if not health.get("call") and health.get("ok") is False:
+        return  # hub unreachable: no evidence either way
     call = health.get("call") or {}
     busy = bool(call.get("busy")) and not bool(call.get("e2e"))
-    if busy:
-        st.hub_saw_busy = True
-    elif st.hub_saw_busy and st.in_call:
-        st.hub_ended_while_phone_live = True
     ws = _ago(call.get("last_ws_s"))
     up = _ago(call.get("last_uplink_s"))
-    # If hub still busy but ws/uplink went quiet for a long time, note it.
-    if busy and ws is not None and ws > 45:
-        st.hub_ws_died = True
-    if busy and up is not None and up > 45:
-        st.hub_uplink_died = True
+    if busy:
+        st.hub_saw_busy = True
+        st.hub_end_at = None  # (re)connected: any earlier end was not final
+        if ws is not None and ws >= STREAM_DEAD_S:
+            if st.ws_dead_at is None:
+                st.ws_dead_at = now - ws
+        elif ws is not None:
+            st.ws_dead_at = None  # recovered
+        if up is not None and up >= STREAM_DEAD_S:
+            if st.uplink_dead_at is None:
+                st.uplink_dead_at = now - up
+        elif up is not None:
+            st.uplink_dead_at = None
+    elif st.hub_saw_busy and st.in_call and st.hub_end_at is None:
+        # Back-date to last ws activity (hub ended then, not at this poll).
+        st.hub_end_at = now - ws if ws is not None else now
     st.last_hub = {
         "busy": call.get("busy"),
         "e2e": call.get("e2e"),
@@ -363,30 +411,85 @@ def journal_summary(since_s: float = 600.0) -> dict[str, Any]:
     return out
 
 
+def _lead(phone_idle_at: Optional[float], at: Optional[float]) -> Optional[float]:
+    if phone_idle_at is None or at is None:
+        return None
+    return round(phone_idle_at - at, 1)
+
+
+def _iso(ts: Optional[float]) -> Optional[str]:
+    if ts is None:
+        return None
+    return datetime.fromtimestamp(ts, timezone.utc).isoformat()
+
+
+def assess_drop(
+    st: WatchState,
+    final_health: dict[str, Any],
+    now: Optional[float] = None,
+    margin_s: float = DROP_MARGIN_S,
+) -> dict[str, Any]:
+    """Decide dropped_suspected from recorded hub timings vs phone IDLE time.
+
+    True only if the hub session ended, or its ws/uplink died, at least
+    ``margin_s`` before the phone went IDLE. Ending inside the margin is the
+    normal hangup teardown (hub notices WS close ~same time as the phone).
+    Sets st.hub_ended_while_phone_live / hub_ws_died / hub_uplink_died.
+    """
+    now = time.time() if now is None else now
+    phone_idle_at = st.phone_idle_at if st.phone_idle_at is not None else now
+    call = final_health.get("call") or {}
+    hub_end_at = st.hub_end_at
+    if hub_end_at is None and st.hub_saw_busy and call and not call.get("busy"):
+        # Hub ended between polls: estimate from last ws activity.
+        ws = _ago(call.get("last_ws_s"))
+        if ws is not None:
+            hub_end_at = now - ws
+    hub_end_lead = _lead(phone_idle_at, hub_end_at)
+    ws_lead = _lead(phone_idle_at, st.ws_dead_at)
+    up_lead = _lead(phone_idle_at, st.uplink_dead_at)
+    st.hub_ended_while_phone_live = hub_end_lead is not None and hub_end_lead >= margin_s
+    st.hub_ws_died = ws_lead is not None and ws_lead >= margin_s
+    st.hub_uplink_died = up_lead is not None and up_lead >= margin_s
+    reasons = []
+    if st.hub_ended_while_phone_live:
+        reasons.append("hub_ended_before_phone")
+    if st.hub_ws_died:
+        reasons.append("ws_died_mid_call")
+    if st.hub_uplink_died:
+        reasons.append("uplink_died_mid_call")
+    return {
+        "dropped_suspected": bool(reasons),
+        "dropped_reasons": reasons,
+        "hub_end_lead_s": hub_end_lead,
+        "ws_dead_lead_s": ws_lead,
+        "uplink_dead_lead_s": up_lead,
+        "drop_margin_s": margin_s,
+        "phone_idle_at_utc": _iso(phone_idle_at),
+        "hub_end_at_utc": _iso(hub_end_at),
+        "hub_still_busy_at_end": bool(call.get("busy")) and not bool(call.get("e2e")),
+    }
+
+
 def build_payload(
     *,
     st: WatchState,
     duration_s: float,
     test: bool = False,
+    health: Optional[dict[str, Any]] = None,
+    now_ts: Optional[float] = None,
 ) -> dict[str, Any]:
-    now = datetime.now(timezone.utc)
+    now_ts = time.time() if now_ts is None else now_ts
+    now = datetime.fromtimestamp(now_ts, timezone.utc)
     now_et = now.astimezone(ET)
-    health = hub_health()
+    health = hub_health() if health is None else health
     call = health.get("call") or {}
     talk = health.get("talk") or {}
     window = max(duration_s + 30.0, 120.0)
     summary = journal_summary(since_s=window)
 
-    dropped = bool(
-        st.hub_ended_while_phone_live
-        or st.hub_ws_died
-        or st.hub_uplink_died
-        or (
-            st.hub_saw_busy
-            and not bool(call.get("busy"))
-            and duration_s > MIN_DURATION_S
-        )
-    )
+    drop = assess_drop(st, health, now=now_ts)
+    dropped = drop["dropped_suspected"]
 
     return {
         "event": "call_ended",
@@ -401,6 +504,8 @@ def build_payload(
         "source": "adb_telephony_telecom",
         "adb_serial": ADB_SERIAL,
         "dropped_suspected": dropped,
+        "dropped_reasons": drop["dropped_reasons"],
+        "hub_end_lead_s": drop["hub_end_lead_s"],
         "hub_health": {
             "ok": health.get("ok"),
             "busy": call.get("busy"),
@@ -420,31 +525,55 @@ def build_payload(
             "ended_while_phone_live": st.hub_ended_while_phone_live,
             "ws_died": st.hub_ws_died,
             "uplink_died": st.hub_uplink_died,
+            "hub_end_lead_s": drop["hub_end_lead_s"],
+            "ws_dead_lead_s": drop["ws_dead_lead_s"],
+            "uplink_dead_lead_s": drop["uplink_dead_lead_s"],
+            "drop_margin_s": drop["drop_margin_s"],
+            "phone_idle_at_utc": drop["phone_idle_at_utc"],
+            "hub_end_at_utc": drop["hub_end_at_utc"],
+            "hub_still_busy_at_end": drop["hub_still_busy_at_end"],
             "last_sample": st.last_hub,
         },
         "call_summary": summary,
         "text": (
             f"call_ended duration_s={duration_s:.0f} "
             f"dropped_suspected={dropped} "
+            f"hub_end_lead_s={drop['hub_end_lead_s']} "
             f"call_id={st.call_id or '-'}"
             + (" TEST" if test else "")
         ),
     }
 
 
-def fire_call_ended(st: WatchState, duration_s: float, *, test: bool = False) -> None:
-    payload = build_payload(st=st, duration_s=duration_s, test=test)
-    post_alert_event(payload)
+def fire_call_ended(
+    st: WatchState,
+    duration_s: float,
+    *,
+    test: bool = False,
+    post: bool = True,
+    health: Optional[dict[str, Any]] = None,
+    now_ts: Optional[float] = None,
+) -> dict[str, Any]:
+    payload = build_payload(st=st, duration_s=duration_s, test=test, health=health, now_ts=now_ts)
+    if post:
+        post_alert_event(payload)
     st.last_fired_call_id = st.call_id or f"anon-{payload['ended_at_utc']}"
     st.last_fired_at = payload["ended_at_utc"]
-    save_state(st)
+    if not test:
+        # Dry-run state is synthetic; never overwrite the live watcher's state file.
+        save_state(st)
     LOG.info(
-        "fired call_ended test=%s duration_s=%.1f call_id=%s dropped=%s",
+        "fired call_ended test=%s posted=%s duration_s=%.1f call_id=%s dropped=%s "
+        "reasons=%s hub_end_lead_s=%s",
         test,
+        post,
         duration_s,
         (st.call_id or "")[:24],
         payload["dropped_suspected"],
+        ",".join(payload["dropped_reasons"]) or "-",
+        payload["hub_end_lead_s"],
     )
+    return payload
 
 
 def on_snapshot(st: WatchState, snap: PhoneSnapshot) -> None:
@@ -465,11 +594,7 @@ def on_snapshot(st: WatchState, snap: PhoneSnapshot) -> None:
         st.offhook_at = time.monotonic()
         st.offhook_wall = datetime.now(timezone.utc).isoformat()
         st.idle_streak = 0
-        st.hub_saw_busy = False
-        st.hub_ended_while_phone_live = False
-        st.hub_ws_died = False
-        st.hub_uplink_died = False
-        st.last_hub = {}
+        st.reset_call_observations()
         observe_hub_during_call(st, health)
         save_state(st)
         LOG.info(
@@ -487,6 +612,7 @@ def on_snapshot(st: WatchState, snap: PhoneSnapshot) -> None:
         if snap.number:
             st.number = snap.number
         st.idle_streak = 0
+        st.phone_idle_at = None  # idle blip that didn't confirm
         # If we restored after restart mid-call, start duration clock now.
         if st.offhook_at is None:
             st.offhook_at = time.monotonic()
@@ -498,6 +624,9 @@ def on_snapshot(st: WatchState, snap: PhoneSnapshot) -> None:
 
     if (not snap.in_call) and st.in_call:
         st.idle_streak += 1
+        if st.phone_idle_at is None:
+            # Phone hung up at most one poll before this.
+            st.phone_idle_at = time.time() - POLL_S / 2.0
         if st.idle_streak < IDLE_CONFIRM_POLLS:
             save_state(st)
             return
@@ -535,11 +664,7 @@ def on_snapshot(st: WatchState, snap: PhoneSnapshot) -> None:
         st.offhook_at = None
         st.offhook_wall = None
         st.idle_streak = 0
-        st.hub_saw_busy = False
-        st.hub_ended_while_phone_live = False
-        st.hub_ws_died = False
-        st.hub_uplink_died = False
-        st.last_hub = {}
+        st.reset_call_observations()
         save_state(st)
         return
 
@@ -578,25 +703,88 @@ def sync_on_startup(st: WatchState, snap: PhoneSnapshot) -> None:
         st.offhook_at = None
         st.offhook_wall = None
         st.idle_streak = 0
+        st.reset_call_observations()
     save_state(st)
 
 
-def dry_run() -> int:
-    """POST one clearly marked test call_ended payload."""
+def _scenario_health(busy: bool, last_ws_s: Optional[float]) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "call": {
+            "busy": busy,
+            "e2e": False,
+            "path": None,
+            "last_ws_s": last_ws_s,
+            "last_uplink_s": last_ws_s,
+        },
+        "talk": {"talk_active": busy},
+    }
+
+
+def simulate_scenario(name: str, now: Optional[float] = None) -> tuple[WatchState, dict[str, Any], float]:
+    """Replay synthetic polls through observe_hub_during_call (no hub/adb).
+
+    normal  — 120s call; hub busy until the hangup, WS closes ~2s before the
+              phone's IDLE is seen (teardown).
+    midcall — 120s call; hub ws/uplink silent from t=60s while busy, then the
+              hub session ends at t=80s; phone stays OFFHOOK until t=120s.
+    """
+    now = time.time() if now is None else now
+    t0 = now - 125.0
     st = WatchState(
-        call_id="TC@dry-run",
+        in_call=True,
+        call_id=f"TC@dry-run-{name}",
         number="+10000000000",
-        offhook_wall=datetime.now(timezone.utc).isoformat(),
-        hub_saw_busy=True,
+        offhook_wall=_iso(t0),
     )
-    fire_call_ended(st, duration_s=42.0, test=True)
+    t = t0
+    end = t0 + 120.0
+    while t < end:
+        if name == "normal":
+            h = _scenario_health(True, 0.3)
+        elif name == "midcall":
+            if t < t0 + 60:
+                h = _scenario_health(True, 0.3)
+            elif t < t0 + 80:
+                h = _scenario_health(True, t - (t0 + 60))
+            else:
+                h = _scenario_health(False, t - (t0 + 60))
+        else:
+            raise ValueError(name)
+        observe_hub_during_call(st, h, now=t)
+        t += POLL_S
+    # WS closes 1s before hangup; phone IDLE first seen at t0+121.25.
+    st.phone_idle_at = end + POLL_S / 2.0
+    if name == "normal":
+        final = _scenario_health(False, now - (end - 1.0))
+    else:
+        final = _scenario_health(False, now - (t0 + 60))
+    return st, final, now
+
+
+def dry_run(scenario: str = "normal", post: bool = True) -> int:
+    """Build a test:true call_ended payload from a synthetic scenario.
+
+    Posts once unless ``post`` is False (``--no-post`` just prints it).
+    """
+    st, final, now = simulate_scenario(scenario)
+    payload = fire_call_ended(
+        st, duration_s=120.0, test=True, post=post, health=final, now_ts=now
+    )
     print(
         json.dumps(
             {
                 "dry_run": True,
-                "posted_event": "call_ended",
-                "test": True,
-                "schema_keys": sorted(build_payload(st=st, duration_s=42.0, test=True).keys()),
+                "scenario": scenario,
+                "posted": post,
+                "test": payload["test"],
+                "dropped_suspected": payload["dropped_suspected"],
+                "dropped_reasons": payload["dropped_reasons"],
+                "hub_end_lead_s": payload["hub_end_lead_s"],
+                "hub_during_call": {
+                    k: v for k, v in payload["hub_during_call"].items() if k != "last_sample"
+                },
+                "schema_keys": sorted(payload.keys()),
             },
             indent=2,
         )
@@ -609,12 +797,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="POST one test:true call_ended payload and exit",
+        help="build one test:true call_ended payload from a synthetic scenario and exit",
+    )
+    parser.add_argument(
+        "--scenario",
+        choices=("normal", "midcall"),
+        default="normal",
+        help="dry-run scenario: normal hangup (expect false) or mid-call hub death (expect true)",
+    )
+    parser.add_argument(
+        "--no-post",
+        action="store_true",
+        help="with --dry-run: print the payload summary, do not POST the webhook",
     )
     args = parser.parse_args(argv)
     setup_logging()
     if args.dry_run:
-        return dry_run()
+        return dry_run(args.scenario, post=not args.no_post)
 
     st = load_state()
     snap = read_phone_snapshot()
