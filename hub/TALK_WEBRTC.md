@@ -69,7 +69,7 @@ clear the lock while orphans are still running.
 | `GSM2COMPUTER_CALL_WS_IDLE_S` | `60` | no inbound WS frames (incl. ping/pong) |
 | `GSM2COMPUTER_CALL_UPLINK_IDLE_S` | `120` | no `input_audio_buffer.append` |
 | `GSM2COMPUTER_CALL_UPLINK_GRACE_S` | `45` | wait this long after `session.updated` before requiring uplink |
-| `GSM2COMPUTER_CALL_MAX_S` | `2700` (45 min) | hard cap from slot claim; disable with `0` |
+| `GSM2COMPUTER_CALL_MAX_S` | `5400` (90 min) | hard cap from slot claim; disable with `0` |
 | `GSM2COMPUTER_CALL_PING_S` | `20` | hub-initiated WS ping after the call is established |
 
 `GET /health` includes `call` (`busy`, `age_s`, `last_ws_s`, `last_uplink_s`).

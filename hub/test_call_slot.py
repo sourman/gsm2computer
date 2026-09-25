@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import unittest
+import unittest.mock
 
 from call_slot import (
     CallSlot,
@@ -45,6 +46,16 @@ class CallSlotLockTests(unittest.TestCase):
         slot.release()
         self.assertFalse(slot.abort.is_set())
         self.assertIsNone(slot.abort_reason)
+
+
+class CallWatchdogDefaultsTests(unittest.TestCase):
+    def test_max_call_default_is_90_min(self) -> None:
+        self.assertEqual(CallWatchdogConfig().max_s, 5400.0)
+        with unittest.mock.patch.dict("os.environ", {}, clear=False) as env:
+            env.pop("GSM2COMPUTER_CALL_MAX_S", None)
+            self.assertEqual(CallWatchdogConfig.from_env().max_s, 5400.0)
+            env["GSM2COMPUTER_CALL_MAX_S"] = "2700"
+            self.assertEqual(CallWatchdogConfig.from_env().max_s, 2700.0)
 
 
 class CallWatchdogPolicyTests(unittest.TestCase):

@@ -40,7 +40,7 @@ class CallWatchdogConfig:
     ws_idle_s: float = 60.0
     uplink_idle_s: float = 120.0
     uplink_grace_s: float = 45.0
-    max_s: float = 2700.0
+    max_s: float = 5400.0  # 90 min
     ping_s: float = 20.0
     enabled: bool = True
 
@@ -50,7 +50,7 @@ class CallWatchdogConfig:
             ws_idle_s=_env_float("GSM2COMPUTER_CALL_WS_IDLE_S", 60.0),
             uplink_idle_s=_env_float("GSM2COMPUTER_CALL_UPLINK_IDLE_S", 120.0),
             uplink_grace_s=_env_float("GSM2COMPUTER_CALL_UPLINK_GRACE_S", 45.0),
-            max_s=_env_float("GSM2COMPUTER_CALL_MAX_S", 2700.0),
+            max_s=_env_float("GSM2COMPUTER_CALL_MAX_S", 5400.0),
             ping_s=_env_float("GSM2COMPUTER_CALL_PING_S", 20.0),
             enabled=_env_enabled("GSM2COMPUTER_CALL_WATCHDOG", True),
         )
