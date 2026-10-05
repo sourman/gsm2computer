@@ -42,6 +42,7 @@ class CallWatchdogConfig:
     uplink_grace_s: float = 45.0
     max_s: float = 5400.0  # 90 min
     ping_s: float = 20.0
+    relink_grace_s: float = 65.0
     enabled: bool = True
 
     @classmethod
@@ -52,6 +53,7 @@ class CallWatchdogConfig:
             uplink_grace_s=_env_float("GSM2COMPUTER_CALL_UPLINK_GRACE_S", 45.0),
             max_s=_env_float("GSM2COMPUTER_CALL_MAX_S", 5400.0),
             ping_s=_env_float("GSM2COMPUTER_CALL_PING_S", 20.0),
+            relink_grace_s=_env_float("GSM2COMPUTER_CALL_RELINK_GRACE_S", 65.0),
             enabled=_env_enabled("GSM2COMPUTER_CALL_WATCHDOG", True),
         )
 
@@ -71,8 +73,38 @@ class CallSlot:
         self.is_e2e: bool = False
         self.abort = asyncio.Event()
         self.abort_reason: Optional[str] = None
+        self.gap_wake = asyncio.Event()
+        self.gap_reason: Optional[str] = None
+        self.session_id: str = ""
+        self.link_gap_since: Optional[float] = None
+        self.link_gap_max_s: float = 0.0
+        self.link_gap_count: int = 0
+        self.ping_sent_at: Optional[float] = None
+        self.last_pong_rtt_ms: Optional[float] = None
+        self.ts_path: str = ""
+        self.ts_relay: str = ""
+        self.ts_addr: str = ""
+        self.last_close_code: Optional[int] = None
+        self.last_close_initiator: str = ""
+        self.last_close_reason: str = ""
         # Set by the WS handler: returns DownlinkSendGuard.snapshot() for /health.
         self.downlink_probe: Optional[Any] = None
+
+    def _reset_link_fields(self) -> None:
+        self.gap_wake = asyncio.Event()
+        self.gap_reason = None
+        self.session_id = ""
+        self.link_gap_since = None
+        self.link_gap_max_s = 0.0
+        self.link_gap_count = 0
+        self.ping_sent_at = None
+        self.last_pong_rtt_ms = None
+        self.ts_path = ""
+        self.ts_relay = ""
+        self.ts_addr = ""
+        self.last_close_code = None
+        self.last_close_initiator = ""
+        self.last_close_reason = ""
 
     @staticmethod
     def path_is_e2e(path: str) -> bool:
@@ -92,6 +124,7 @@ class CallSlot:
         self.is_e2e = self.path_is_e2e(path)
         self.abort = asyncio.Event()
         self.abort_reason = None
+        self._reset_link_fields()
         return True
 
     def mark_established(self) -> None:
@@ -108,6 +141,49 @@ class CallSlot:
         self.last_uplink_at = now
         self.last_ws_at = now
 
+    def ask_link_gap(self, reason: str) -> None:
+        """Wake the reader to hold the call. Grace 0 keeps the old immediate abort."""
+        if not self.busy or self.link_gap_since is not None:
+            return
+        if self.config.relink_grace_s <= 0:
+            self.abort_call(reason)
+            return
+        self.gap_reason = reason
+        self.gap_wake.set()
+
+    def take_gap_request(self) -> Optional[str]:
+        if not self.gap_wake.is_set():
+            return None
+        reason = self.gap_reason or "link gap"
+        self.gap_reason = None
+        self.gap_wake = asyncio.Event()
+        return reason
+
+    def note_link_gap(self) -> None:
+        if self.link_gap_since is None:
+            self.link_gap_since = self._clock()
+            self.link_gap_count += 1
+
+    def clear_link_gap(self) -> None:
+        if self.link_gap_since is not None:
+            dur = self._clock() - self.link_gap_since
+            if dur > self.link_gap_max_s:
+                self.link_gap_max_s = dur
+        self.link_gap_since = None
+
+    def note_pong_rtt(self, rtt_ms: float) -> None:
+        self.last_pong_rtt_ms = round(float(rtt_ms), 1)
+
+    def note_tailscale(self, mode: str, relay: str = "", addr: str = "") -> None:
+        self.ts_path = mode or ""
+        self.ts_relay = relay or ""
+        self.ts_addr = addr or ""
+
+    def note_close(self, code: Optional[int], initiator: str, reason: str = "") -> None:
+        self.last_close_code = code
+        self.last_close_initiator = initiator or ""
+        self.last_close_reason = reason or ""
+
     def abort_call(self, reason: str) -> None:
         if self.abort_reason is None:
             self.abort_reason = reason
@@ -123,6 +199,7 @@ class CallSlot:
         self.is_e2e = False
         self.abort_reason = None
         self.downlink_probe = None
+        self._reset_link_fields()
         self.abort.set()
         self.abort = asyncio.Event()
 
@@ -140,6 +217,17 @@ class CallSlot:
                     f"max call duration {age:.0f}s "
                     f"(GSM2COMPUTER_CALL_MAX_S={cfg.max_s:.0f})"
                 )
+        if self.link_gap_since is not None:
+            gap = now - self.link_gap_since
+            grace = cfg.relink_grace_s
+            limit = (grace + 5.0) if grace > 0 else 0.0
+            if gap >= limit:
+                return (
+                    f"relink grace exceeded {gap:.0f}s "
+                    f"(GSM2COMPUTER_CALL_RELINK_GRACE_S={grace:.0f})"
+                )
+            # The relink waiter owns ws-idle / uplink-idle until grace ends.
+            return None
         if self.established_at is None:
             return None
         established_for = now - self.established_at
@@ -183,6 +271,18 @@ class CallSlot:
             "last_ws_s": _ago(self.last_ws_at),
             "last_uplink_s": _ago(self.last_uplink_at),
             "abort_reason": self.abort_reason,
+            "session_id": self.session_id or None,
+            "link_gap_open": self.link_gap_since is not None,
+            "link_gap_s": _ago(self.link_gap_since),
+            "link_gap_max_s": round(self.link_gap_max_s, 3),
+            "link_gap_count": self.link_gap_count,
+            "ws_rtt_ms": self.last_pong_rtt_ms,
+            "ts_path": self.ts_path or None,
+            "ts_relay": self.ts_relay or None,
+            "ts_addr": self.ts_addr or None,
+            "last_close_code": self.last_close_code,
+            "last_close_initiator": self.last_close_initiator or None,
+            "last_close_reason": self.last_close_reason or None,
         }
         probe = self.downlink_probe
         if self.busy and probe is not None:

@@ -4,10 +4,12 @@ import android.content.Context
 import android.os.Build
 import android.telecom.Call
 import android.util.Log
+import android.telecom.DisconnectCause
 import com.gsm2computer.bridge.BridgeConfig
 import com.gsm2computer.bridge.HubEndpoints
 import com.gsm2computer.bridge.RootShell
 import com.gsm2computer.bridge.audio.MicIsolationGuard
+import com.gsm2computer.bridge.diag.CallTraceSampler
 import com.gsm2computer.bridge.gsm.GsmCallManager
 import com.gsm2computer.bridge.realtime.HubStreamClient
 import com.gsm2computer.bridge.rtp.MediaTransport
@@ -28,8 +30,12 @@ class CallOrchestrator(
 
     private var activeSession: RtpSession? = null
     private var activeGsmCall: Call? = null
+    @Volatile private var activeClient: HubStreamClient? = null
+    private var callTrace: CallTraceSampler? = null
     @Volatile private var streamBridgePending = false
     @Volatile private var lastStateChangeTime = 0L
+    @Volatile private var traceTelecomState: String = ""
+    @Volatile private var traceDisconnect: String = ""
 
     @Volatile var bridgeState: BridgeState = BridgeState.IDLE
         private set
@@ -48,6 +54,7 @@ class CallOrchestrator(
         CONNECTING,
         BRIDGED,
         GSM_DIALING,
+        LINK_HOLD,
         TEARING_DOWN,
     }
 
@@ -80,6 +87,8 @@ class CallOrchestrator(
         }
         bridgeState = BridgeState.GSM_DIALING
         lastStateChangeTime = System.currentTimeMillis()
+        traceTelecomState = "DIALING"
+        beginCallTrace()
         listener?.onStateChanged(bridgeState, "Dialing $number")
         GsmCallManager.muteLocalEarpiece = true
         GsmCallManager.makeCall(context, number)
@@ -110,6 +119,8 @@ class CallOrchestrator(
         bridgeState = BridgeState.GSM_RINGING
         activeGsmCall = call
         lastStateChangeTime = System.currentTimeMillis()
+        noteTelecom(call)
+        beginCallTrace()
         listener?.onStateChanged(bridgeState, "GSM call from $number")
 
         streamBridgePending = true
@@ -124,6 +135,7 @@ class CallOrchestrator(
             return
         }
         activeGsmCall = call
+        noteTelecom(call)
         if (streamBridgePending) {
             streamBridgePending = false
             Thread({ startStreamBridge() }, "Stream-Start").start()
@@ -138,6 +150,7 @@ class CallOrchestrator(
         if (call !== activeGsmCall) {
             return
         }
+        noteTelecom(call)
         if (state == Call.STATE_DISCONNECTED && bridgeState != BridgeState.IDLE) {
             tearDown("GSM call disconnected")
         }
@@ -148,6 +161,7 @@ class CallOrchestrator(
             Log.i(TAG, "Waiting/rejected GSM call ended; live call unchanged")
             return
         }
+        noteTelecom(call)
         if (bridgeState != BridgeState.IDLE) {
             tearDown("GSM call ended")
         }
@@ -170,7 +184,10 @@ class CallOrchestrator(
             voice = cfg.streamVoice,
             instructions = HubStreamClient.DEFAULT_INSTRUCTIONS,
             hubOwnedSession = cfg.hubOwnedSession,
+            linkGraceMs = cfg.hubLinkGraceMs,
+            onTrace = { kind, fields -> callTrace?.event(kind, fields) },
         )
+        activeClient = transport
         startAudioPump(RtpPacket.PT_PCMU, transport)
 
         if (bridgeState == BridgeState.IDLE || bridgeState == BridgeState.TEARING_DOWN) {
@@ -206,8 +223,11 @@ class CallOrchestrator(
             override fun onRtpError(error: String) {
                 listener?.onError("Audio: $error")
             }
-            override fun onRtpTimeout() {
-                tearDown("Hub stream timeout")
+            override fun onRtpTimeout(reason: String) {
+                tearDown(reason.ifBlank { "Hub stream timeout" })
+            }
+            override fun onLinkHold(holding: Boolean, detail: String) {
+                onHubLinkHold(holding, detail)
             }
             override fun onRtpStats(stats: String) {
                 listener?.onStreamStats(stats)
@@ -220,16 +240,31 @@ class CallOrchestrator(
     @Synchronized
     private fun tearDown(reason: String) {
         if (bridgeState == BridgeState.IDLE || bridgeState == BridgeState.TEARING_DOWN) return
+        val party = if (reason.startsWith("GSM call")) partyFromCause(activeGsmCall) else "local"
+        Log.i(TAG, "Tearing down: $reason end=$party cause=$traceDisconnect")
+        callTrace?.event(
+            "teardown",
+            mapOf(
+                "reason" to reason,
+                "end" to party,
+                "disconnect_cause" to traceDisconnect,
+                "telecom_state" to traceTelecomState,
+                "call_state" to bridgeState.name,
+            ),
+        )
         bridgeState = BridgeState.TEARING_DOWN
         streamBridgePending = false
-        Log.i(TAG, "Tearing down: $reason")
 
         try {
             activeSession?.stop()
             activeSession = null
-            activeGsmCall?.let { call ->
+            activeClient = null
+            val gsm = activeGsmCall
+            if (gsm != null) {
                 try {
-                    call.disconnect()
+                    if (gsm.state != Call.STATE_DISCONNECTED) {
+                        gsm.disconnect()
+                    }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error disconnecting GSM: ${e.message}")
                 }
@@ -239,7 +274,80 @@ class CallOrchestrator(
             GsmCallManager.muteLocalEarpiece = false
             bridgeState = BridgeState.IDLE
             lastStateChangeTime = System.currentTimeMillis()
+            stopCallTrace()
             listener?.onStateChanged(BridgeState.IDLE, reason)
+        }
+    }
+
+    @Synchronized
+    private fun onHubLinkHold(holding: Boolean, detail: String) {
+        if (bridgeState == BridgeState.IDLE || bridgeState == BridgeState.TEARING_DOWN) return
+        if (holding) {
+            if (bridgeState != BridgeState.LINK_HOLD) {
+                bridgeState = BridgeState.LINK_HOLD
+                lastStateChangeTime = System.currentTimeMillis()
+                listener?.onStateChanged(BridgeState.LINK_HOLD, detail)
+            }
+            return
+        }
+        if (bridgeState == BridgeState.LINK_HOLD || bridgeState == BridgeState.CONNECTING) {
+            bridgeState = BridgeState.BRIDGED
+            lastStateChangeTime = System.currentTimeMillis()
+            listener?.onStateChanged(BridgeState.BRIDGED, detail)
+        }
+    }
+
+    @Synchronized
+    private fun beginCallTrace() {
+        if (callTrace != null) return
+        try {
+            val cfg = resolveConfig()
+            callTrace = CallTraceSampler.start(context, cfg.hubControlUrl) {
+                mapOf(
+                    "call_state" to bridgeState.name,
+                    "telecom_state" to traceTelecomState,
+                    "disconnect_cause" to traceDisconnect,
+                    "ws_state" to (activeClient?.linkState ?: ""),
+                    "ws_rtt_ms" to (activeClient?.lastRttMs?.takeIf { it >= 0L }),
+                    "ws_session_id" to (activeClient?.sessionId?.takeIf { it.isNotBlank() }),
+                )
+            }
+            callTrace?.event(
+                "call_start",
+                mapOf("grace_ms" to cfg.hubLinkGraceMs, "call_state" to bridgeState.name),
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "call trace disabled: ${e.message}")
+            callTrace = null
+        }
+    }
+
+    @Synchronized
+    private fun stopCallTrace() {
+        val trace = callTrace
+        callTrace = null
+        try {
+            trace?.stop()
+        } catch (e: Exception) {
+            Log.w(TAG, "call trace stop failed: ${e.message}")
+        }
+    }
+
+    private fun noteTelecom(call: Call?) {
+        traceTelecomState = telecomLabel(call?.state ?: -1)
+        traceDisconnect = disconnectLabel(call)
+    }
+
+    private fun partyFromCause(call: Call?): String {
+        val code = try {
+            call?.details?.disconnectCause?.code
+        } catch (_: Exception) {
+            null
+        }
+        return when (code) {
+            DisconnectCause.LOCAL, DisconnectCause.CANCELED, DisconnectCause.MISSED -> "local"
+            null, DisconnectCause.UNKNOWN -> "unknown"
+            else -> "remote"
         }
     }
 
@@ -249,6 +357,7 @@ class CallOrchestrator(
             activeSession?.stop()
         } catch (_: Exception) {}
         activeSession = null
+        activeClient = null
         try {
             activeGsmCall?.disconnect()
         } catch (_: Exception) {}
@@ -257,7 +366,48 @@ class CallOrchestrator(
         GsmCallManager.muteLocalEarpiece = false
         bridgeState = BridgeState.IDLE
         lastStateChangeTime = System.currentTimeMillis()
+        callTrace?.event("teardown", mapOf("reason" to reason, "end" to "local"))
+        stopCallTrace()
         listener?.onStateChanged(BridgeState.IDLE, reason)
+    }
+
+    private fun telecomLabel(state: Int): String = when (state) {
+        Call.STATE_NEW -> "NEW"
+        Call.STATE_RINGING -> "RINGING"
+        Call.STATE_DIALING -> "DIALING"
+        Call.STATE_ACTIVE -> "ACTIVE"
+        Call.STATE_HOLDING -> "HOLDING"
+        Call.STATE_DISCONNECTED -> "DISCONNECTED"
+        Call.STATE_CONNECTING -> "CONNECTING"
+        Call.STATE_DISCONNECTING -> "DISCONNECTING"
+        Call.STATE_SELECT_PHONE_ACCOUNT -> "SELECT_PHONE_ACCOUNT"
+        else -> "UNKNOWN"
+    }
+
+    private fun disconnectLabel(call: Call?): String {
+        val cause = try {
+            call?.details?.disconnectCause
+        } catch (_: Exception) {
+            null
+        } ?: return ""
+        val name = when (cause.code) {
+            DisconnectCause.UNKNOWN -> "UNKNOWN"
+            DisconnectCause.ERROR -> "ERROR"
+            DisconnectCause.LOCAL -> "LOCAL"
+            DisconnectCause.REMOTE -> "REMOTE"
+            DisconnectCause.CANCELED -> "CANCELED"
+            DisconnectCause.MISSED -> "MISSED"
+            DisconnectCause.REJECTED -> "REJECTED"
+            DisconnectCause.BUSY -> "BUSY"
+            DisconnectCause.RESTRICTED -> "RESTRICTED"
+            DisconnectCause.OTHER -> "OTHER"
+            DisconnectCause.CONNECTION_MANAGER_NOT_SUPPORTED -> "CONNECTION_MANAGER_NOT_SUPPORTED"
+            DisconnectCause.ANSWERED_ELSEWHERE -> "ANSWERED_ELSEWHERE"
+            DisconnectCause.CALL_PULLED -> "CALL_PULLED"
+            else -> "CODE_${cause.code}"
+        }
+        val reason = cause.reason?.take(80).orEmpty()
+        return if (reason.isEmpty()) name else "$name:$reason"
     }
 
     private fun forceAllowRecordAudio() {

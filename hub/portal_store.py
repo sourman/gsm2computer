@@ -35,6 +35,18 @@ CREATE TABLE IF NOT EXISTS calls (
 );
 CREATE INDEX IF NOT EXISTS calls_started ON calls (started_at);
 
+CREATE TABLE IF NOT EXISTS call_link_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    session_id TEXT,
+    kind TEXT NOT NULL,
+    close_code INTEGER,
+    close_reason TEXT,
+    initiator TEXT,
+    detail TEXT
+);
+CREATE INDEX IF NOT EXISTS call_link_events_ts ON call_link_events (ts);
+
 CREATE TABLE IF NOT EXISTS outbox (
     id TEXT PRIMARY KEY,
     to_number TEXT NOT NULL,
@@ -429,6 +441,53 @@ class PortalStore:
         with self._lock:
             row = self._conn.execute("SELECT * FROM calls WHERE id = ?", (call_id,)).fetchone()
         return _row_call(row) if row else None
+
+    def add_link_event(
+        self,
+        kind: str,
+        session_id: Optional[str] = None,
+        close_code: Optional[int] = None,
+        close_reason: Optional[str] = None,
+        initiator: Optional[str] = None,
+        detail: Optional[str] = None,
+        ts: Optional[str] = None,
+    ) -> dict[str, Any]:
+        item = {
+            "ts": ts or utc_now(),
+            "session_id": session_id or None,
+            "kind": (kind or "close").strip() or "close",
+            "close_code": int(close_code) if close_code is not None else None,
+            "close_reason": close_reason or None,
+            "initiator": initiator or None,
+            "detail": detail or None,
+        }
+        with self._lock:
+            cur = self._conn.execute(
+                """INSERT INTO call_link_events
+                   (ts, session_id, kind, close_code, close_reason, initiator, detail)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    item["ts"],
+                    item["session_id"],
+                    item["kind"],
+                    item["close_code"],
+                    item["close_reason"],
+                    item["initiator"],
+                    item["detail"],
+                ),
+            )
+            self._conn.commit()
+            item["id"] = cur.lastrowid
+        return item
+
+    def list_link_events(self, limit: int = 50) -> list[dict[str, Any]]:
+        cap = max(1, min(int(limit or 50), 500))
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM call_link_events ORDER BY id DESC LIMIT ?",
+                (cap,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def get_message(self, msg_id: str) -> Optional[dict[str, Any]]:
         with self._lock:

@@ -13,6 +13,7 @@ import re
 import signal
 import socket
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, Tuple
@@ -24,6 +25,15 @@ from ws_backpressure import (
     transport_buffered,
     writer_closing,
 )
+from call_link import (
+    RelinkGate,
+    WsRead,
+    is_clean_hangup,
+    load_tailscale_status,
+    parse_tailscale_status,
+    read_peer_socket,
+    wait_for_ws,
+)
 from call_slot import (
     CallSlot,
     CallWatchdogConfig,
@@ -32,6 +42,7 @@ from call_slot import (
     preempt_e2e_for_real_call,
     wait_or_abort,
 )
+from link_gap_log import append_link_gap
 from urllib.parse import parse_qs, urlsplit
 from call_tap import RECORD_DIR, CallTap
 from portal_http import EventBus, PortalApp
@@ -101,6 +112,7 @@ active_bridge: Optional["PipewireBridge"] = None
 active_ws_writer: Optional[asyncio.StreamWriter] = None
 active_openclaw: Optional[Any] = None
 live_call = CallSlot(CALL_WATCHDOG)
+relink_gate = RelinkGate()
 last_call_tap: Optional[dict[str, Any]] = None
 
 try:
@@ -234,34 +246,65 @@ async def ws_send_ping(writer: asyncio.StreamWriter, payload: bytes = b"hub") ->
         writer.write(header + payload)
 
 
-async def ws_read_frame(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> Optional[str]:
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _use_utc_logging() -> None:
+    fmt = logging.Formatter(
+        "%(asctime)s.%(msecs)03dZ %(levelname)s %(name)s: %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    )
+    fmt.converter = time.gmtime  # type: ignore[attr-defined]
+    root = logging.getLogger()
+    if not root.handlers:
+        logging.basicConfig(level=logging.INFO)
+    for handler in root.handlers:
+        handler.setFormatter(fmt)
+
+
+async def ws_read_frame(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> WsRead:
+    """Read one frame. An ended frame carries the close code and who closed."""
     try:
         hdr = await reader.readexactly(2)
     except asyncio.IncompleteReadError:
-        return None
+        return WsRead(ended=True, initiator="eof", close_reason="incomplete read")
+    except (ConnectionResetError, BrokenPipeError) as exc:
+        return WsRead(ended=True, initiator="reset", close_reason=str(exc) or type(exc).__name__)
+    except (ConnectionError, OSError) as exc:
+        return WsRead(ended=True, initiator="reset", close_reason=type(exc).__name__)
     opcode = hdr[0] & 0x0F
     masked = bool(hdr[1] & 0x80)
     length = hdr[1] & 0x7F
-    if length == 126:
-        length = int.from_bytes(await reader.readexactly(2), "big")
-    elif length == 127:
-        length = int.from_bytes(await reader.readexactly(8), "big")
-
-    mask = await reader.readexactly(4) if masked else None
-    payload = await reader.readexactly(length)
+    try:
+        if length == 126:
+            length = int.from_bytes(await reader.readexactly(2), "big")
+        elif length == 127:
+            length = int.from_bytes(await reader.readexactly(8), "big")
+        mask = await reader.readexactly(4) if masked else None
+        payload = await reader.readexactly(length)
+    except asyncio.IncompleteReadError:
+        return WsRead(ended=True, initiator="eof", close_reason="incomplete read")
+    except (ConnectionResetError, BrokenPipeError, ConnectionError, OSError) as exc:
+        return WsRead(ended=True, initiator="reset", close_reason=type(exc).__name__)
     if masked and mask:
         payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
 
     if opcode == 0x8:
-        return None
+        code = None
+        reason = ""
+        if len(payload) >= 2:
+            code = int.from_bytes(payload[:2], "big")
+            reason = payload[2:].decode("utf-8", errors="replace")
+        return WsRead(ended=True, initiator="peer", close_code=code, close_reason=reason)
     if opcode == 0x9:
         await ws_send_pong(writer, payload)
-        return ""
+        return WsRead(text="")
     if opcode == 0xA:
-        return ""
+        return WsRead(text="", pong=True)
     if opcode == 0x1:
-        return payload.decode("utf-8", errors="replace")
-    return ""
+        return WsRead(text=payload.decode("utf-8", errors="replace"))
+    return WsRead(text="")
 
 
 async def ws_send_close(writer: asyncio.StreamWriter, code: int, reason: str) -> None:
@@ -492,6 +535,7 @@ class PipewireBridge:
         self._out_dst_rate = DEFAULT_CLIENT_RATE
         self.downlink_guard = DownlinkSendGuard()
         self._stall_logged_recovery = True
+        self._out_writer: Optional[asyncio.StreamWriter] = None
 
     def _track_helper(self, proc: asyncio.subprocess.Process, label: str) -> None:
         self._helper_tasks.append(asyncio.create_task(self._log_helper_stderr(proc, label)))
@@ -613,7 +657,8 @@ class PipewireBridge:
             )
             self.record_linked = True
             LOG.info("hub record linked: %s", rec_detail)
-            self._record_task = asyncio.create_task(self._pump_out(ws_writer))
+            self._out_writer = ws_writer
+            self._record_task = asyncio.create_task(self._pump_out())
         LOG.info(
             "pipewire bridge started sink=%s serial=%s monitor=%s record=%s",
             self.sink,
@@ -657,7 +702,29 @@ class PipewireBridge:
         self.client_out_format = out_fmt
         self.client_out_rate = out_rate
 
-    async def _pump_out(self, ws_writer: asyncio.StreamWriter) -> None:
+    def downlink_snapshot(self) -> dict[str, Any]:
+        try:
+            return self.downlink_guard.snapshot()
+        except Exception:
+            return {}
+
+    def current_downlink_writer(self) -> Optional[asyncio.StreamWriter]:
+        writer = self._out_writer
+        if writer is None or writer_closing(writer):
+            return None
+        return writer
+
+    def detach_downlink(self) -> None:
+        """Drop the phone socket. pw-record keeps running; frames are discarded."""
+        self._out_writer = None
+
+    def attach_downlink(self, writer: asyncio.StreamWriter) -> None:
+        """Point downlink at a relinked socket and forget the previous stall."""
+        self.downlink_guard = DownlinkSendGuard()
+        self._stall_logged_recovery = True
+        self._out_writer = writer
+
+    async def _pump_out(self) -> None:
         assert self._record and self._record.stdout
         # 20 ms of stereo s16le at the PipeWire bus rate.
         read_size = self.rate // 50 * 2 * 2
@@ -710,8 +777,11 @@ class PipewireBridge:
             # backlog is small, drop stale frames beyond it, and only give up
             # when queued bytes make no progress for DOWNLINK_DEAD_S.
             guard = self.downlink_guard
-            if writer_closing(ws_writer):
-                break
+            ws_writer = self._out_writer
+            if ws_writer is None or writer_closing(ws_writer):
+                if ws_writer is not None and self._out_writer is ws_writer and writer_closing(ws_writer):
+                    self._out_writer = None
+                continue
             guard.observe(transport_buffered(ws_writer))
             dead = guard.dead_reason()
             if dead:
@@ -734,7 +804,9 @@ class PipewireBridge:
             try:
                 ws_writer.write(frame)
             except (ConnectionError, BrokenPipeError, RuntimeError):
-                break
+                if self._out_writer is ws_writer:
+                    self._out_writer = None
+                continue
         if self._record.returncode is None:
             await self._record.wait()
 
@@ -817,10 +889,14 @@ class PipewireBridge:
 
 async def _watch_live_call(
     slot: CallSlot,
-    writer: asyncio.StreamWriter,
     bridge: Optional[PipewireBridge],
 ) -> None:
-    """Abort a half-open or idle GSM WebSocket so finally can release the lock."""
+    """Abort a half-open or idle GSM WebSocket so finally can release the lock.
+
+    A failed ping during an enabled relink grace asks the reader to hold the
+    call instead of aborting it. The grace backstop in CallSlot.check still
+    frees a slot whose handler never returns.
+    """
     ping_every = slot.config.ping_s
     last_ping = time.monotonic()
     while slot.busy:
@@ -832,18 +908,27 @@ async def _watch_live_call(
         if not slot.abort.is_set():
             await asyncio.sleep(1.0)
         now = time.monotonic()
+        writer = bridge.current_downlink_writer() if bridge is not None else None
         if (
             not slot.abort.is_set()
+            and writer is not None
             and ping_every > 0
             and slot.established_at is not None
+            and slot.link_gap_since is None
             and now - last_ping >= ping_every
         ):
             try:
                 await ws_send_ping(writer)
             except (ConnectionError, BrokenPipeError, OSError) as exc:
-                slot.abort_call(f"websocket ping send failed: {exc}")
+                if slot.config.relink_grace_s > 0:
+                    slot.ask_link_gap(f"websocket ping send failed: {exc}")
+                else:
+                    slot.abort_call(f"websocket ping send failed: {exc}")
             else:
+                slot.ping_sent_at = time.monotonic()
                 last_ping = now
+        elif writer is None:
+            last_ping = now
         reason = slot.abort_reason or slot.check(now)
         if not reason and not slot.abort.is_set():
             continue
@@ -852,23 +937,25 @@ async def _watch_live_call(
         else:
             reason = slot.abort_reason or "call aborted"
         LOG.error(
-            "call watchdog abort: %s cleared_lock=after_cleanup %s",
+            "call watchdog abort: %s cleared_lock=after_cleanup %s utc=%s",
             reason,
             slot.snapshot(now),
+            _utc_now(),
         )
         if reason != SUPERSEDED_REASON:
             post_system_alert(
                 f"call watchdog abort: {reason}",
                 e2e=bool(getattr(slot, "is_e2e", False) or CallSlot.path_is_e2e(getattr(slot, "path", "") or "")),
             )
-        try:
-            await ws_send_close(writer, 1011, reason)
-        except (ConnectionError, BrokenPipeError, OSError) as exc:
-            LOG.warning("call watchdog could not send ws close: %s", exc)
-        try:
-            writer.close()
-        except Exception as exc:
-            LOG.warning("call watchdog could not close ws writer: %s", exc)
+        if writer is not None:
+            try:
+                await ws_send_close(writer, 1011, reason)
+            except (ConnectionError, BrokenPipeError, OSError) as exc:
+                LOG.warning("call watchdog could not send ws close: %s", exc)
+            try:
+                writer.close()
+            except Exception as exc:
+                LOG.warning("call watchdog could not close ws writer: %s", exc)
         # finally may never run (dead GSM peer); do not await here — this task
         # is cancelled from the WS finally. Schedule an independent ensure.
         asyncio.create_task(
@@ -1136,6 +1223,192 @@ async def _run_e2e_after_silent_call(call_id: str) -> None:
             _e2e_after_silent_scheduled = False
 
 
+def _record_link_event(kind: str, **fields: Any) -> None:
+    """Persist a link event. Failures stay off the audio path."""
+    event = {"kind": kind, "ts": _utc_now(), **fields}
+    try:
+        append_link_gap(event)
+    except Exception:
+        LOG.warning("link gap log write failed", exc_info=True)
+    try:
+        portal_store.add_link_event(
+            kind=kind,
+            session_id=fields.get("session_id"),
+            close_code=fields.get("close_code"),
+            close_reason=str(fields.get("close_reason") or "") or None,
+            initiator=fields.get("initiator"),
+            detail=str(fields.get("detail") or "") or None,
+            ts=event["ts"],
+        )
+    except Exception:
+        LOG.warning("link gap sqlite write failed", exc_info=True)
+    LOG.info("link_event %s", json.dumps(event, default=str, sort_keys=True))
+
+
+def _log_ws_end(slot: CallSlot, frame: Optional[WsRead], initiator: str, detail: str = "") -> None:
+    code = frame.close_code if frame is not None else None
+    reason = (frame.close_reason if frame is not None else "") or detail or (slot.abort_reason or "")
+    who = initiator or (frame.initiator if frame is not None else "") or "unknown"
+    slot.note_close(code, who, reason)
+    clean = is_clean_hangup(code, who)
+    LOG.info(
+        "ws close session=%s code=%s reason=%s initiator=%s clean=%s abort=%s utc=%s",
+        slot.session_id,
+        code,
+        reason,
+        who,
+        clean,
+        slot.abort_reason,
+        _utc_now(),
+    )
+    _record_link_event(
+        "close" if clean else "drop",
+        session_id=slot.session_id,
+        close_code=code,
+        close_reason=reason,
+        initiator=who,
+        detail=slot.abort_reason or detail or reason,
+    )
+
+
+async def _park_relink_socket(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    session_id: str,
+    key: str,
+) -> bool:
+    """101 and hand the socket to the live call. True means this handler must return."""
+    if not relink_gate.matches(session_id):
+        return False
+    accept = ws_accept_key(key)
+    writer.write(
+        (
+            "HTTP/1.1 101 Switching Protocols\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Accept: {accept}\r\n"
+            "\r\n"
+        ).encode("ascii")
+    )
+    await writer.drain()
+    release_fut = relink_gate.deliver(session_id, reader, writer)
+    if release_fut is None:
+        LOG.warning("relink race lost session=%s utc=%s", session_id, _utc_now())
+        return True
+    LOG.info("relink socket parked session=%s utc=%s", session_id, _utc_now())
+    await release_fut
+    return True
+
+
+async def _hold_for_relink(
+    slot: CallSlot,
+    bridge: Optional["PipewireBridge"],
+    session_id: str,
+    writer: asyncio.StreamWriter,
+    reason: str,
+    frame: Optional[WsRead],
+) -> Optional[tuple]:
+    """Keep Talk and PipeWire up until the same session connects again."""
+    global active_ws_writer
+    grace = slot.config.relink_grace_s
+    if grace <= 0:
+        return None
+    code = frame.close_code if frame is not None else None
+    initiator = frame.initiator if frame is not None and frame.ended else "hub"
+    close_reason = (frame.close_reason if frame is not None else "") or reason
+    slot.note_close(code, initiator, close_reason)
+    slot.note_link_gap()
+    if bridge is not None:
+        bridge.detach_downlink()
+    if active_ws_writer is writer:
+        active_ws_writer = None
+    relink_gate.release_holder()
+    try:
+        writer.close()
+    except Exception:
+        LOG.debug("close during link gap failed", exc_info=True)
+    _record_link_event(
+        "gap_open",
+        session_id=session_id,
+        close_code=code,
+        close_reason=close_reason,
+        initiator=initiator,
+        detail=reason,
+    )
+    LOG.warning(
+        "link gap open session=%s grace=%.0fs initiator=%s code=%s reason=%s utc=%s",
+        session_id,
+        grace,
+        initiator,
+        code,
+        close_reason,
+        _utc_now(),
+    )
+    try:
+        fut = relink_gate.begin(session_id)
+        result = await wait_or_abort(asyncio.wait_for(fut, timeout=grace), slot.abort)
+    except (asyncio.TimeoutError, TimeoutError):
+        result = None
+    if result is None:
+        relink_gate.cancel_wait()
+        if not slot.abort_reason:
+            slot.abort_call(f"relink grace expired ({grace:.0f}s)")
+        _record_link_event(
+            "gap_expired",
+            session_id=session_id,
+            initiator="hub",
+            detail=slot.abort_reason or "relink grace expired",
+        )
+        LOG.warning(
+            "link gap expired session=%s abort=%s utc=%s",
+            session_id,
+            slot.abort_reason,
+            _utc_now(),
+        )
+        return None
+    new_reader, new_writer, _release = result
+    if bridge is not None:
+        bridge.attach_downlink(new_writer)
+    slot.clear_link_gap()
+    slot.note_ws_activity()
+    active_ws_writer = new_writer
+    _record_link_event("relink", session_id=session_id, initiator="peer", detail="same session")
+    LOG.info("relinked session=%s utc=%s", session_id, _utc_now())
+    return new_reader, new_writer
+
+
+async def _watch_call_path(slot: CallSlot, peer_ip: str, claimed_at: float) -> None:
+    """Tailscale direct/relay plus socket stats while this claim is live."""
+    last_fail = 0.0
+    while slot.busy and slot.claimed_at == claimed_at:
+        try:
+            status = await asyncio.to_thread(load_tailscale_status)
+            info = parse_tailscale_status(status if isinstance(status, dict) else {}, peer_ip)
+            slot.note_tailscale(
+                str(info.get("mode") or "unknown"),
+                str(info.get("relay") or ""),
+                str(info.get("addr") or ""),
+            )
+            sock = await asyncio.to_thread(read_peer_socket, peer_ip)
+            LOG.info(
+                "call path session=%s mode=%s relay=%s addr=%s peer=%s rtt_ms=%s ss=%s utc=%s",
+                slot.session_id,
+                info.get("mode"),
+                info.get("relay") or "-",
+                info.get("addr") or "-",
+                peer_ip or "-",
+                slot.last_pong_rtt_ms,
+                sock,
+                _utc_now(),
+            )
+        except Exception as exc:
+            now = time.monotonic()
+            if now - last_fail > 30:
+                LOG.info("call path probe failed: %s", exc)
+                last_fail = now
+        await asyncio.sleep(5.0)
+
+
 async def handle_websocket(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
@@ -1149,6 +1422,20 @@ async def handle_websocket(
     key = headers.get("sec-websocket-key")
     if not key:
         writer.write(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+        return
+
+    resume_id = (headers.get("x-gsm-call-session") or "").strip()
+    if resume_id and await _park_relink_socket(reader, writer, resume_id, key):
+        return
+    if live_call.link_gap_since is not None and (live_call.busy or active_bridge is not None):
+        LOG.warning(
+            "rejecting websocket during link gap session_hdr=%s %s utc=%s",
+            resume_id or "-",
+            live_call.snapshot(),
+            _utc_now(),
+        )
+        writer.write(b"HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n")
         await writer.drain()
         return
 
@@ -1213,17 +1500,20 @@ async def handle_websocket(
         await writer.drain()
         return
 
+    session_id = "hub-" + uuid.uuid4().hex[:16]
     if not live_call.claim(path):
         LOG.warning("rejecting websocket: call slot raced %s", live_call.snapshot())
         writer.write(b"HTTP/1.1 409 Conflict\r\nConnection: close\r\n\r\n")
         await writer.drain()
         return
+    live_call.session_id = session_id
 
     playback_sink = GSM_SINK
     openclaw_bridge: Optional[Any] = None
     watchdog_task: Optional[asyncio.Task] = None
     rollover_task: Optional[asyncio.Task] = None
     call_watchdog_task: Optional[asyncio.Task] = None
+    path_task: Optional[asyncio.Task] = None
     bridge: Optional[PipewireBridge] = None
     try:
         accept = ws_accept_key(key)
@@ -1269,8 +1559,8 @@ async def handle_websocket(
             tap=tap,
             on_abort=live_call.abort_call,
         )
-        live_call.downlink_probe = bridge.downlink_guard.snapshot
-        call_watchdog_task = asyncio.create_task(_watch_live_call(live_call, writer, bridge))
+        live_call.downlink_probe = bridge.downlink_snapshot
+        call_watchdog_task = asyncio.create_task(_watch_live_call(live_call, bridge))
         if not loopback and OPENCLAW_TALK_MODE == "webrtc-ui":
             if OpenClawTalkUI is None or get_talk_ui is None:
                 await fail_call_handshake(writer, "OpenClaw Control UI Talk supervisor is not available")
@@ -1346,7 +1636,7 @@ async def handle_websocket(
         session_ack = {
             "type": "session.updated",
             "session": {
-                "id": f"hub-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
+                "id": session_id,
                 "model": f"gsm2computer-hub-{OPENCLAW_TALK_MODE}" if not loopback else "gsm2computer-hub",
                 "audio": {
                     "format": DEFAULT_CLIENT_FORMAT,
@@ -1369,23 +1659,84 @@ async def handle_websocket(
             watchdog_task = asyncio.create_task(_watch_webrtc_ui_talk(openclaw_bridge, bridge))
             rollover_task = asyncio.create_task(_talk_rollover_watch(openclaw_bridge, bridge))
 
+        peername = writer.get_extra_info("peername")
+        peer_ip = peername[0] if isinstance(peername, tuple) and peername else ""
+        path_task = asyncio.create_task(
+            _watch_call_path(live_call, peer_ip, live_call.claimed_at or 0.0)
+        )
+
         while True:
-            if live_call.abort.is_set() or bridge.aborted():
+            if bridge.aborted() or (live_call.abort.is_set() and not live_call.gap_wake.is_set()):
                 LOG.error(
-                    "call aborted (%s); closing websocket %s",
+                    "call aborted (%s); closing websocket %s utc=%s",
                     live_call.abort_reason or "pipewire abort",
                     live_call.snapshot(),
+                    _utc_now(),
                 )
+                _log_ws_end(live_call, None, "hub", live_call.abort_reason or "aborted")
                 break
-            msg = await wait_or_abort(ws_read_frame(reader, writer), live_call.abort)
-            if msg is None:
-                if live_call.abort_reason:
-                    LOG.error(
-                        "call watchdog ended websocket: %s %s",
-                        live_call.abort_reason,
-                        live_call.snapshot(),
+            outcome, frame = await wait_for_ws(
+                ws_read_frame(reader, writer), live_call.abort, live_call.gap_wake
+            )
+            if outcome == "abort":
+                LOG.error(
+                    "call watchdog ended websocket: %s %s utc=%s",
+                    live_call.abort_reason,
+                    live_call.snapshot(),
+                    _utc_now(),
+                )
+                _log_ws_end(live_call, None, "hub", live_call.abort_reason or "aborted")
+                break
+            ended = frame is not None and frame.ended
+            if outcome == "gap" or ended:
+                if ended and frame is not None and is_clean_hangup(frame.close_code, frame.initiator):
+                    _log_ws_end(live_call, frame, "peer")
+                    break
+                if ended and live_call.abort.is_set() and live_call.abort_reason:
+                    _log_ws_end(live_call, frame, "hub", live_call.abort_reason)
+                    break
+                if live_call.is_e2e or live_call.config.relink_grace_s <= 0:
+                    who = frame.initiator if frame is not None else "eof"
+                    _log_ws_end(live_call, frame, who)
+                    break
+                gap_reason = live_call.take_gap_request()
+                if not gap_reason:
+                    gap_reason = (frame.close_reason if frame is not None else "") or "socket ended"
+                held = await _hold_for_relink(
+                    live_call, bridge, session_id, writer, gap_reason, frame if ended else None
+                )
+                if held is None:
+                    break
+                reader, writer = held
+                try:
+                    await ws_send_text(writer, json.dumps(session_ack))
+                except (ConnectionError, BrokenPipeError, OSError) as exc:
+                    LOG.warning("relink session.updated failed: %s", exc)
+                    held_again = await _hold_for_relink(
+                        live_call, bridge, session_id, writer, f"relink write failed: {exc}", None
                     )
+                    if held_again is None:
+                        break
+                    reader, writer = held_again
+                continue
+            if frame is None:
+                _log_ws_end(live_call, None, "eof", "no frame")
                 break
+            if frame.pong:
+                sent = live_call.ping_sent_at
+                if sent is not None:
+                    rtt_ms = (time.monotonic() - sent) * 1000.0
+                    live_call.note_pong_rtt(rtt_ms)
+                    live_call.ping_sent_at = None
+                    LOG.info(
+                        "ws pong rtt_ms=%.0f session=%s utc=%s",
+                        rtt_ms,
+                        live_call.session_id,
+                        _utc_now(),
+                    )
+                live_call.note_ws_activity()
+                continue
+            msg = frame.text
             live_call.note_ws_activity()
             if not msg:
                 continue
@@ -1429,16 +1780,28 @@ async def handle_websocket(
                         await ws_send_text(writer, json.dumps(echo))
                     elif OPENCLAW_TALK_MODE == "relay" and openclaw_bridge is not None:
                         openclaw_bridge.feed_gsm_ulaw(bridge.to_ulaw_8k(audio, fmt, rate))
+            elif etype == "client.ping":
+                await ws_send_text(
+                    writer,
+                    json.dumps({"type": "client.pong", "t": event.get("t")}),
+                )
             else:
                 LOG.debug("ws event type=%s", etype)
     finally:
         abort_reason = live_call.abort_reason
+        relink_gate.close()
         # Drop reject-gate refs first so a hung Talk/PipeWire stop cannot 409
         # the next dial (ghost reject after reaper freed CallSlot).
         if active_ws_writer is writer:
             active_ws_writer = None
         if active_bridge is bridge:
             active_bridge = None
+        if path_task:
+            path_task.cancel()
+            try:
+                await path_task
+            except asyncio.CancelledError:
+                pass
         if call_watchdog_task:
             call_watchdog_task.cancel()
             try:
@@ -1729,8 +2092,10 @@ async def _reap_stuck_call_slot() -> None:
 async def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        format="%(asctime)s.%(msecs)03dZ %(levelname)s %(name)s: %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
     )
+    _use_utc_logging()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown()))
@@ -1740,7 +2105,7 @@ async def main() -> None:
     addrs = ", ".join(str(sock.getsockname()) for sock in server.sockets or [])
     LOG.info(
         "listening on %s (sink=%s auto_mode=%s openclaw_talk=%s "
-        "call_watchdog=ws_idle=%s uplink_idle=%s max=%s)",
+        "call_watchdog=ws_idle=%s uplink_idle=%s max=%s relink_grace=%s)",
         addrs,
         GSM_SINK,
         AUTO_MODE_ON_CALL or "off",
@@ -1748,6 +2113,7 @@ async def main() -> None:
         CALL_WATCHDOG.ws_idle_s,
         CALL_WATCHDOG.uplink_idle_s,
         CALL_WATCHDOG.max_s,
+        CALL_WATCHDOG.relink_grace_s,
     )
     async with server:
         await server.serve_forever()

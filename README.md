@@ -75,6 +75,96 @@ Manual test:
 3. App log should show `SMS forwarded from …` or `SMS forward failed: …`.
 4. On the hub, confirm `POST /sms` received the JSON. Hub `/health` should already be up (SAF-15).
 
+## Call-drop diagnostics
+
+Mid-call Tailscale or Wi-Fi dips used to hang up the GSM call, because any websocket failure called `Call.disconnect()`. The phone now holds the GSM call and retries the hub for `hub_link_grace_ms` (default **55s**, `0` disables the hold). The hub keeps the same call slot, PipeWire bridge, and Talk session for `GSM2COMPUTER_CALL_RELINK_GRACE_S` (default **65s**) and accepts a reconnect that sends `X-Gsm-Call-Session` with the id from `session.updated`. A different client still gets HTTP 409. A websocket close `1000`/`1001` is a hangup and ends the call. The caller hears silence during the gap.
+
+Clocks in these logs are **UTC**.
+
+### Pixel log
+
+Written only while a call is up, about once a second, plus an immediate line for every websocket and teardown event. Rotated at 2 MB, five files kept. Survives reboot. The sampler never runs on the audio threads; if it fails, the call continues.
+
+```
+/storage/emulated/0/Android/data/com.gsm2computer.bridge/files/call-trace/call-trace.jsonl
+/storage/emulated/0/Android/data/com.gsm2computer.bridge/files/call-trace/call-trace.1.jsonl
+… call-trace.4.jsonl
+```
+
+`adb pull` that path after `adb root` (the gateway Pixel is rooted). If pull is denied:
+
+```bash
+./scripts/pull-pixel-call-trace.sh ./pixel-call-trace
+# or
+adb shell su -c 'cat /storage/emulated/0/Android/data/com.gsm2computer.bridge/files/call-trace/call-trace.jsonl'
+```
+
+Every line is one JSON object. Common fields: `ts` (UTC, `...Z`), `kind`.
+
+| kind | when | fields |
+|---|---|---|
+| `call_start` | call begins | `grace_ms`, `call_state` |
+| `sample` | ~1 Hz | fields below |
+| `net_event` | network callback | `callback` (`onAvailable` / `onLost` / `onCapabilitiesChanged`), `network`, `transports` |
+| `ws_open` | socket up | `session_id`, `http` |
+| `ws_failure` | connect or read failed | `code`, `message`, `exception` |
+| `ws_closed` | peer close, or local `stop` | `code`, `reason`, `local` |
+| `reconnect` | retry scheduled | `attempt`, `delay_ms`, `message`, `session_id` |
+| `ws_give_up` | grace expired or clean close | `message`, `session_id` |
+| `teardown` | GSM call is released | `reason`, `end` (`local` / `remote` / `unknown`), `disconnect_cause`, `telecom_state`, `call_state` |
+
+`sample` fields (absent when that probe could not run):
+
+- `call_state` — orchestrator (`BRIDGED`, `LINK_HOLD`, …)
+- `telecom_state` — `RINGING`, `ACTIVE`, `DISCONNECTED`, …
+- `disconnect_cause` — telecom cause name, plus reason when present (`REMOTE`, `LOCAL:…`)
+- `ws_state` — `connecting`, `open`, `hold`, `closed`
+- `ws_rtt_ms` — last `client.ping` / `client.pong` round trip
+- `ws_session_id`
+- `network_transports` — `WIFI`, `CELLULAR`, `VPN`, joined with `+`
+- `vpn_active`, `network_id`
+- `probe_iface`, `probe_gateway` — non-VPN interface and its default gateway
+- `cell_rat` (`2G`/`3G`/`LTE`/`NR`), `cell_dbm`, `cell_level`
+- `wifi_rssi`, `wifi_bssid`, `wifi_link_mbps`
+- `wifi_tx_packets`, `wifi_rx_packets`, `wifi_tx_errors`, `wifi_rx_errors`, `wifi_tx_retries` (sysfs, retries only if the driver exposes them)
+- `wifi_tx_delta`, `wifi_rx_delta`, `wifi_tx_err_delta` — since the previous sample
+- `probe_gateway_ok`, `probe_gateway_ms`, `probe_gateway_error` — ICMP to the gateway, bound to `probe_iface`
+- `probe_public_ok`, `probe_public_ms`, `probe_public_error`, `probe_public_target` — ICMP to `1.1.1.1`, bound to the same interface (does not go through Tailscale)
+- `probe_hub_ok`, `probe_hub_ms`, `probe_hub_error`, `probe_hub_target` — TCP connect to the hub control URL on the default route (the tailnet path)
+
+The three probes fail independently: gateway down means Wi-Fi/AP, public down means WAN, hub down means Tailscale or the hub.
+
+Grace period on the phone (milliseconds, `0` = hang up on the first failure). The key is `hub_link_grace_ms` in the `gsm2computer` shared preferences. Default is 55000. Read it; do not replace the prefs file:
+
+```bash
+adb shell su -c 'grep hub_link_grace_ms /data/data/com.gsm2computer.bridge/shared_prefs/gsm2computer.xml'
+```
+
+### Hub log
+
+Journal timestamps are UTC (`YYYY-MM-DDTHH:MM:SS.mmmZ`). A dropped call and a normal hangup are different lines:
+
+- `ws close session=… code=1000 reason=call ended initiator=peer clean=True` — the phone hung up
+- `ws close … initiator=reset` or `initiator=eof` with `clean=False`, then `link gap open` — the path died and the hub is holding the call
+- `relinked session=…` — the same call attached again
+- `link gap expired` — nobody came back; the slot is released
+- `ws pong rtt_ms=…` — hub websocket ping/pong RTT
+- `call path session=… mode=direct|relay|unknown relay=… addr=… ss=…` — every 5s while the call is up. `mode=direct` means Tailscale `CurAddr` is set; `relay` means DERP only. `ss` is `ss -tin` (`rtt_ms`, `rto_ms`, `bytes_retrans`, `unacked`) when `ss` is installed
+
+`/health` `call` also carries `session_id`, `link_gap_open`, `link_gap_s`, `link_gap_max_s`, `link_gap_count`, `ws_rtt_ms`, `ts_path`, `ts_relay`, `ts_addr`, `last_close_code`, `last_close_initiator`, `last_close_reason`.
+
+The same events are appended, restart-safe, to:
+
+```
+~/gsm2computer-call-end-watch/link-gaps.jsonl
+```
+
+Override with `GSM2COMPUTER_LINK_GAP_LOG`. Rotated at 2 MB, three files (`link-gaps.jsonl`, `.1`, `.2`). Each line: `ts`, `kind` (`gap_open`, `relink`, `gap_expired`, `close`, `drop`), `session_id`, `close_code`, `close_reason`, `initiator`, `detail`.
+
+They are also inserted into the portal SQLite table `call_link_events` (same database as `calls`, default `portal.sqlite` next to the hub). `call_end_watch` copies the JSONL tail into the `call_ended` payload as `link_gaps`, and treats an open `link_gap_s` / `link_gap_max_s` on `/health` as a mid-call gap.
+
+`GSM2COMPUTER_CALL_RELINK_GRACE_S=0` disables the hold (first dead socket ends the call, which is the old behavior).
+
 ## Development
 
 ```bash

@@ -29,3 +29,7 @@ No call-waiting UI, hold, swap, or queue. Loopback (`/loopback`) uses the same h
 - The second caller hears reject/busy from the network, not a second agent.
 - Mixer restore stays tied to the live call ending, not to a waiting leg disappearing.
 - Hub `/health` still describes one session; overlapping Talk Chromium sessions are out of scope.
+
+## Amendment (2026-10-05): link-gap relink
+
+A dead Pixel websocket is not a second call. While `GSM2COMPUTER_CALL_RELINK_GRACE_S` (default 65s) is running, the hub keeps the CallSlot, PipeWire bridge, and Talk session, and accepts one new socket that presents the same `X-Gsm-Call-Session` id. Any other client still gets **409**. The grace backstop and the existing force-release path still free a slot whose handler never returns. A peer close `1000`/`1001` is a hangup and does not enter the grace window. `GSM2COMPUTER_CALL_RELINK_GRACE_S=0` restores immediate teardown.

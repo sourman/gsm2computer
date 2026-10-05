@@ -189,6 +189,7 @@ class GatewayService : Service() {
                     CallOrchestrator.BridgeState.IDLE -> NotifState.OK to "Ready"
                     CallOrchestrator.BridgeState.GSM_DIALING -> NotifState.OK to "Dialing"
                     CallOrchestrator.BridgeState.BRIDGED -> NotifState.OK to "In call"
+                    CallOrchestrator.BridgeState.LINK_HOLD -> NotifState.OK to "Reconnecting"
                     CallOrchestrator.BridgeState.GSM_RINGING,
                     CallOrchestrator.BridgeState.CONNECTING,
                     CallOrchestrator.BridgeState.TEARING_DOWN -> NotifState.OK to "In call"

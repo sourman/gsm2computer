@@ -161,7 +161,8 @@ class RtpSession(
         fun onRtpStarted()
         fun onRtpStopped()
         fun onRtpError(error: String)
-        fun onRtpTimeout() {}  // No RTP received for rtpTimeoutMs
+        fun onRtpTimeout(reason: String = "rtp timeout") {}
+        fun onLinkHold(holding: Boolean, detail: String) {}
         fun onRtpStats(stats: String) {}  // Periodic detailed stats
     }
 
@@ -553,12 +554,17 @@ class RtpSession(
             listener?.onRtpStats(msg)
         }
 
+        override fun onLinkHold(holding: Boolean, detail: String) {
+            Log.w(TAG, "hub link hold=$holding $detail")
+            listener?.onLinkHold(holding, detail)
+        }
+
         override fun onError(msg: String) {
             Log.e(TAG, "transport error: $msg")
             listener?.onRtpStats("transport error: $msg")
-            // Audio path is dead — tear the bridge down promptly (same path the
-            // RTP inactivity timeout uses) rather than waiting out the timeout.
-            listener?.onRtpTimeout()
+            // Grace retries live inside the transport. This fires only when the
+            // link did not come back, or the peer closed the call (code 1000).
+            listener?.onRtpTimeout(msg)
         }
     }
 
@@ -979,7 +985,7 @@ class RtpSession(
                     val elapsed = System.currentTimeMillis() - lastRtpReceivedTime
                     if (elapsed > rtpTimeoutMs) {
                         Log.w(TAG, "RTP timeout: no packets received for ${elapsed / 1000}s")
-                        listener?.onRtpTimeout()
+                        listener?.onRtpTimeout("rtp timeout ${elapsed / 1000}s")
                         break
                     }
                 }
