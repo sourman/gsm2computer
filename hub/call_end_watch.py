@@ -28,6 +28,7 @@ from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
 from alert_webhook import post_alert_event
+from link_gap_log import read_recent
 
 LOG = logging.getLogger("gsm2computer-call-end-watch")
 
@@ -174,7 +175,11 @@ class WatchState:
 def setup_logging() -> None:
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     LOG.setLevel(logging.INFO)
-    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    fmt = logging.Formatter(
+        "%(asctime)s.%(msecs)03dZ %(levelname)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    )
+    fmt.converter = time.gmtime  # type: ignore[attr-defined]
     LOG.handlers.clear()
     sh = logging.StreamHandler()
     sh.setFormatter(fmt)
@@ -348,6 +353,9 @@ def observe_hub_during_call(
                 st.uplink_dead_at = now - up
         elif up is not None:
             st.uplink_dead_at = None
+        if call.get("link_gap_open"):
+            _note_gap(st, _ago(call.get("link_gap_s")))
+        _note_gap(st, _ago(call.get("link_gap_max_s")))
     elif st.hub_saw_busy and st.in_call and st.hub_end_at is None:
         # Back-date to last ws activity (hub ended then, not at this poll).
         st.hub_end_at = now - ws if ws is not None else now
@@ -358,6 +366,15 @@ def observe_hub_during_call(
         "last_ws_s": call.get("last_ws_s"),
         "last_uplink_s": call.get("last_uplink_s"),
         "abort_reason": call.get("abort_reason"),
+        "session_id": call.get("session_id"),
+        "link_gap_open": call.get("link_gap_open"),
+        "link_gap_s": call.get("link_gap_s"),
+        "link_gap_max_s": call.get("link_gap_max_s"),
+        "ws_rtt_ms": call.get("ws_rtt_ms"),
+        "ts_path": call.get("ts_path"),
+        "ts_relay": call.get("ts_relay"),
+        "last_close_code": call.get("last_close_code"),
+        "last_close_initiator": call.get("last_close_initiator"),
         "talk_active": (health.get("talk") or {}).get("talk_active"),
         "webrtc_connected": (health.get("talk") or {}).get("webrtc_connected"),
         "cdp": (health.get("talk") or {}).get("cdp"),
@@ -508,6 +525,14 @@ def assess_drop(
     }
 
 
+def _safe_link_gaps() -> list:
+    try:
+        return read_recent(limit=30)
+    except Exception:
+        LOG.debug("link gap read failed", exc_info=True)
+        return []
+
+
 def build_payload(
     *,
     st: WatchState,
@@ -575,6 +600,7 @@ def build_payload(
             "last_sample": st.last_hub,
         },
         "call_summary": summary,
+        "link_gaps": _safe_link_gaps(),
         "text": (
             f"call_ended duration_s={duration_s:.0f} "
             f"dropped_suspected={dropped} "

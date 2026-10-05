@@ -2,6 +2,7 @@ package com.gsm2computer.bridge
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.gsm2computer.bridge.diag.HubLinkGrace
 
 /**
  * Hub stream settings: where bridged call audio is sent (WebSocket transport)
@@ -18,6 +19,7 @@ object BridgeConfig {
     const val KEY_STREAM_MODEL = "stream_model"
     const val KEY_STREAM_VOICE = "stream_voice"
     const val KEY_HUB_OWNED_SESSION = "hub_owned_session"
+    const val KEY_HUB_LINK_GRACE_MS = "hub_link_grace_ms"
 
     const val DEFAULT_AUTOCONNECT = true
     val defaultStreamEnabled: Boolean get() = BuildConfig.DEFAULT_STREAM_ENABLED
@@ -69,6 +71,16 @@ object BridgeConfig {
         prefs.getString(KEY_STREAM_VOICE, null)?.takeIf { it.isNotBlank() }
             ?: defaultStreamVoice
 
+    /**
+     * How long to keep the GSM call while the hub websocket is retried.
+     * `0` disables the hold and tears the call down on the first failure.
+     */
+    fun resolveHubLinkGraceMs(prefs: SharedPreferences): Long {
+        if (!prefs.contains(KEY_HUB_LINK_GRACE_MS)) return HubLinkGrace.DEFAULT_GRACE_MS
+        return prefs.getLong(KEY_HUB_LINK_GRACE_MS, HubLinkGrace.DEFAULT_GRACE_MS)
+            .coerceIn(0L, 180_000L)
+    }
+
     fun resolveHubOwnedSession(prefs: SharedPreferences): Boolean {
         val stored = if (prefs.contains(KEY_HUB_OWNED_SESSION)) {
             prefs.getBoolean(KEY_HUB_OWNED_SESSION, true)
@@ -89,6 +101,7 @@ object BridgeConfig {
         val streamModel: String,
         val streamVoice: String,
         val hubOwnedSession: Boolean,
+        val hubLinkGraceMs: Long,
     )
 
     fun resolve(prefs: SharedPreferences): Resolved = Resolved(
@@ -99,5 +112,6 @@ object BridgeConfig {
         streamModel = resolveStreamModel(prefs),
         streamVoice = resolveStreamVoice(prefs),
         hubOwnedSession = resolveHubOwnedSession(prefs),
+        hubLinkGraceMs = resolveHubLinkGraceMs(prefs),
     )
 }

@@ -136,6 +136,19 @@ class AssessDropTests(unittest.TestCase):
         self.assertIn("mid_call_gap", out["dropped_reasons"])
         self.assertEqual(out["hub_gap_max_s"], 14.0)
 
+    def test_open_link_gap_counts_while_the_call_stays_busy(self) -> None:
+        st = self._call()
+        h = H(True, 0.4)
+        h["call"]["link_gap_open"] = True
+        h["call"]["link_gap_s"] = 18.0
+        h["call"]["link_gap_max_s"] = 18.0
+        h["call"]["last_close_initiator"] = "reset"
+        cew.observe_hub_during_call(st, h, now=1000.0)
+        self.assertGreaterEqual(st.hub_gap_max_s, 18.0)
+        st.phone_idle_at = 1100.0
+        out = cew.assess_drop(st, H(True, 0.2), now=1101.0)
+        self.assertIn("mid_call_gap", out["dropped_reasons"])
+
     def test_gap_not_counted_outside_call_and_reset(self) -> None:
         st = cew.WatchState(in_call=False)
         cew.observe_hub_during_call(st, H(True, 30.0), now=1000.0)
