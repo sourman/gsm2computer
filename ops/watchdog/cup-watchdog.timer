@@ -1,0 +1,12 @@
+[Unit]
+Description=Run cup-watchdog every 150s
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=150s
+AccuracySec=10s
+Persistent=false
+Unit=cup-watchdog.service
+
+[Install]
+WantedBy=timers.target

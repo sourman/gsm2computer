@@ -1,0 +1,14 @@
+[Unit]
+Description=cup-watchdog: read-only health checks, webhook only on down/recovered (+ daily summary)
+After=gsm2computer-hub.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/gsm2computer-hub/ops/watchdog/cup_watchdog.py
+# Hard cap so a wedged check can never pile up (timer skips while a run is active).
+TimeoutStartSec=240
+Nice=10
+IOSchedulingClass=idle
+# Webhook URL/KEY are read from the gsm2computer-hub unit environment at runtime.
+# Set CUP_WATCHDOG_POST=0 in a drop-in to hold POSTs (state still tracked; held
+# down events fire once POSTs are re-enabled).
