@@ -259,6 +259,107 @@ CLICK_STOP_JS = r"""
 """
 
 
+# Per-Talk-session realtime diagnostics. Patched on the RTCPeerConnection
+# prototype (works on the long-lived page without a reload) and kept under
+# its own globals so the e2e harness's per-run reset cannot wipe a real
+# call's record. Answers: did OpenAI see speech / transcribe / respond / error?
+DIAG_HOOK_JS = r"""
+(() => {
+  window.__gsm2DiagAttach = (ch, pc) => {
+    if (!ch || ch.__gsm2DiagRec) return;
+    const all = (window.__gsm2DiagAll = window.__gsm2DiagAll || []);
+    const rec = {
+      n: (window.__gsm2DiagSeq = (window.__gsm2DiagSeq || 0) + 1),
+      t0: Date.now(), label: ch.label, open_ms: null, close_ms: null,
+      msgs: 0, counts: {}, first_ms: {}, last: [], errors: [],
+    };
+    ch.__gsm2DiagRec = rec;
+    rec.pc = pc || null;
+    all.push(rec);
+    while (all.length > 12) all.shift();
+    window.__gsm2Diag = rec;
+    ch.addEventListener("open", () => { rec.open_ms = Date.now() - rec.t0; });
+    ch.addEventListener("close", () => { rec.close_ms = Date.now() - rec.t0; });
+    ch.addEventListener("message", (ev) => {
+      rec.msgs += 1;
+      let j = null;
+      try { j = typeof ev.data === "string" ? JSON.parse(ev.data) : null; } catch (e) {}
+      const t = (j && j.type) || "?";
+      rec.counts[t] = (rec.counts[t] || 0) + 1;
+      if (!(t in rec.first_ms)) rec.first_ms[t] = Date.now() - rec.t0;
+      if (!/delta$/.test(t)) { rec.last.push(t); if (rec.last.length > 16) rec.last.shift(); }
+      if (j && (t === "error" || /failed|incomplete/.test(t) ||
+          (t === "response.done" && j.response && j.response.status && j.response.status !== "completed"))) {
+        const err = j.error || (j.response && j.response.status_details) || {};
+        if (rec.errors.length < 6) rec.errors.push({t, ms: Date.now() - rec.t0,
+          m: String(err.message || err.code || err.type || err.reason || JSON.stringify(err)).slice(0, 240)});
+      }
+    });
+  };
+  if (window.RTCPeerConnection && !window.__gsm2DiagPatched) {
+    const proto = window.RTCPeerConnection.prototype;
+    const origCdc = proto.createDataChannel;
+    proto.createDataChannel = function (...a) {
+      const ch = origCdc.apply(this, a);
+      try { window.__gsm2DiagAttach && window.__gsm2DiagAttach(ch, this); } catch (e) {}
+      return ch;
+    };
+    window.__gsm2DiagPatched = true;
+  }
+  return !!window.__gsm2DiagPatched;
+})()
+"""
+
+DIAG_SNAPSHOT_JS = r"""
+(async () => {
+  const pcs = window.__gsm2TalkPcs || [];
+  const rec = window.__gsm2Diag || null;
+  const pc = (rec && rec.pc) || pcs[pcs.length - 1] || null;
+  const status = document.querySelector(
+    ".agent-chat__voice-status, .agent-chat__talk-status-text, .agent-chat__talk-status"
+  );
+  const out = {
+    pcs_total: pcs.length,
+    pcs_open: pcs.filter((p) => p.connectionState !== "closed").length,
+    status: status ? status.textContent.trim().slice(0, 120) : null,
+    dc: null, pc: null, rtp: {},
+  };
+  if (rec) {
+    out.dc = {n: rec.n, age_ms: Date.now() - rec.t0, open_ms: rec.open_ms, close_ms: rec.close_ms,
+              msgs: rec.msgs, counts: rec.counts, first_ms: rec.first_ms, last: rec.last, errors: rec.errors};
+  }
+  if (pc) {
+    out.pc = {conn: pc.connectionState, ice: pc.iceConnectionState, sig: pc.signalingState,
+              current: !!(rec && rec.pc === pc),
+              senders: pc.getSenders().filter((s) => s.track).map((s) => ({
+                kind: s.track.kind, state: s.track.readyState, enabled: s.track.enabled,
+                muted: s.track.muted, label: (s.track.label || "").slice(0, 60)}))};
+    if (pc.connectionState !== "closed") {
+      try {
+        const st = await pc.getStats();
+        st.forEach((r) => {
+          if (r.type === "media-source" && r.kind === "audio")
+            out.rtp.src = {level: r.audioLevel, energy: r.totalAudioEnergy, dur_s: r.totalSamplesDuration};
+          else if (r.type === "outbound-rtp" && r.kind === "audio")
+            out.rtp.out = {pkts: r.packetsSent, bytes: r.bytesSent};
+          else if (r.type === "inbound-rtp" && r.kind === "audio")
+            out.rtp.in = {pkts: r.packetsReceived, bytes: r.bytesReceived, lost: r.packetsLost,
+                          energy: r.totalAudioEnergy, level: r.audioLevel};
+          else if (r.type === "candidate-pair" && r.nominated && r.state === "succeeded")
+            out.rtp.pair = {rtt: r.currentRoundTripTime, sent: r.bytesSent, recv: r.bytesReceived};
+          else if (r.type === "data-channel")
+            out.rtp.dc = {state: r.state, in: r.messagesReceived, out: r.messagesSent};
+        });
+      } catch (e) { out.rtp.err = String(e).slice(0, 120); }
+    }
+  }
+  return out;
+})()
+"""
+
+DIAG_MID_CALL_S = float(os.environ.get("GSM2COMPUTER_TALK_DIAG_MID_S", "12"))
+
+
 class TalkUiError(RuntimeError):
     """Control UI Talk is not up; hub must fail the call handshake."""
 
@@ -776,10 +877,12 @@ class OpenClawTalkUI:
         session = await self._connect_page()
         try:
             await session.evaluate(HOOK_JS)
+            await self._install_diag(session)
             hook_state = await session.evaluate(
                 "({gum:window.__gsm2GumPatchVer||0, fresh:!!window.__gsm2NeedsFreshGum})"
             )
             LOG.info("webrtc hook state: %s", hook_state)
+            await self._log_diag(session, "pre-start")
             # Do not reload the Control UI page here. A GUM_VER bump reloads in
             # start_audio (before the phone hears anything). Reloading after
             # Talk/uplink is live is an audible cut and can wipe the e2e DC hook.
@@ -823,8 +926,49 @@ class OpenClawTalkUI:
             await asyncio.sleep(RELINK_SETTLE_S)
             await relink_openclaw_phone_mic()
             LOG.info("control ui talk webrtc connected: %s", state.get("pcs"))
+            await self._log_diag(session, "connected")
+            self._schedule_mid_diag()
         finally:
             await session.close()
+
+    async def _install_diag(self, session: "CdpSession") -> None:
+        try:
+            await session.evaluate(DIAG_HOOK_JS, timeout_s=2.0)
+        except Exception as exc:
+            LOG.warning("talk diag hook failed: %s", exc)
+
+    async def _log_diag(self, session: "CdpSession", phase: str) -> None:
+        """One-line realtime snapshot: DC event counts, sender track, RTP stats."""
+        try:
+            snap = await session.evaluate(DIAG_SNAPSHOT_JS, timeout_s=2.5, await_promise=True)
+        except Exception as exc:
+            LOG.warning("talk diag %s failed: %s", phase, exc)
+            return
+        LOG.info("talk diag %s: %s", phase, json.dumps(snap, separators=(",", ":"), default=str))
+
+    def _schedule_mid_diag(self) -> None:
+        task = getattr(self, "_mid_diag_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+        started = self.talk_started_at
+
+        async def _mid() -> None:
+            await asyncio.sleep(DIAG_MID_CALL_S)
+            if not self.talk_active or self.talk_started_at != started or not cdp_available():
+                return
+            try:
+                session = await self._connect_page()
+            except Exception:
+                return
+            try:
+                await self._log_diag(session, f"mid+{DIAG_MID_CALL_S:.0f}s")
+            finally:
+                await session.close()
+
+        try:
+            self._mid_diag_task = asyncio.get_running_loop().create_task(_mid())
+        except RuntimeError:
+            self._mid_diag_task = None
 
     async def talk_session_healthy(self) -> Optional[bool]:
         """Return whether Talk UI is live and has a connected WebRTC peer (None if CDP unavailable)."""
@@ -868,7 +1012,11 @@ class OpenClawTalkUI:
         except Exception as exc:
             LOG.warning("talk stop: cdp unavailable: %s", exc)
             return
+        task = getattr(self, "_mid_diag_task", None)
+        if task is not None and not task.done():
+            task.cancel()
         try:
+            await self._log_diag(session, "pre-stop")
             result = await session.evaluate(CLICK_STOP_JS)
             LOG.info("talk stop click: %s", result)
         except Exception as exc:
