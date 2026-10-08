@@ -265,16 +265,63 @@ CLICK_STOP_JS = r"""
 # call's record. Answers: did OpenAI see speech / transcribe / respond / error?
 DIAG_HOOK_JS = r"""
 (() => {
+  // Secrets out, instructions/tools reduced to size; everything else kept.
+  const redact = (v, depth) => {
+    if (depth > 8) return "[deep]";
+    if (Array.isArray(v)) return v.slice(0, 40).map((x) => redact(x, depth + 1));
+    if (!v || typeof v !== "object") return v;
+    const o = {};
+    for (const [k, x] of Object.entries(v)) {
+      if (/secret|token|api_?key|authorization|password|bearer/i.test(k)) o[k] = "[redacted]";
+      else if (k === "instructions" && typeof x === "string") o[k] = {len: x.length};
+      else if (k === "tools" && Array.isArray(x)) o[k] = x.map((t) => (t && (t.name || t.type)) || "?");
+      else o[k] = redact(x, depth + 1);
+    }
+    return o;
+  };
+  const summarize = (sess) => {
+    const s = sess || {};
+    const a = s.audio || {}, ai = a.input || {}, ao = a.output || {};
+    return {
+      id: s.id, object: s.object, type: s.type, model: s.model,
+      output_modalities: s.output_modalities, modalities: s.modalities,
+      voice: ao.voice || s.voice,
+      input_format: ai.format || s.input_audio_format,
+      output_format: ao.format || s.output_audio_format,
+      turn_detection: ai.turn_detection !== undefined ? ai.turn_detection : s.turn_detection,
+      transcription: ai.transcription !== undefined ? ai.transcription : s.input_audio_transcription,
+      noise_reduction: ai.noise_reduction !== undefined ? ai.noise_reduction : s.input_audio_noise_reduction,
+      instructions_len: typeof s.instructions === "string" ? s.instructions.length : null,
+      tools: Array.isArray(s.tools) ? s.tools.length : null,
+      tool_choice: s.tool_choice, expires_at: s.expires_at,
+      tracing: s.tracing === undefined ? undefined : !!s.tracing,
+    };
+  };
+  window.__gsm2DiagRedact = redact;
+  window.__gsm2DiagSummarize = summarize;
   window.__gsm2DiagAttach = (ch, pc) => {
     if (!ch || ch.__gsm2DiagRec) return;
     const all = (window.__gsm2DiagAll = window.__gsm2DiagAll || []);
+    const prevRec = all.length ? all[all.length - 1] : null;
+    const now = Date.now();
     const rec = {
       n: (window.__gsm2DiagSeq = (window.__gsm2DiagSeq || 0) + 1),
-      t0: Date.now(), label: ch.label, open_ms: null, close_ms: null,
+      t0: now, label: ch.label, open_ms: null, close_ms: null,
       msgs: 0, counts: {}, first_ms: {}, last: [], errors: [],
+      sess: [], payloads: [], sent: [],
+      prev: prevRec ? {
+        n: prevRec.n,
+        dc_state: prevRec.ch ? prevRec.ch.readyState : null,
+        pc_state: prevRec.pc ? prevRec.pc.connectionState : null,
+        ice_state: prevRec.pc ? prevRec.pc.iceConnectionState : null,
+        dc_closed_ago_ms: prevRec.close_ms != null ? now - (prevRec.t0 + prevRec.close_ms) : null,
+        prev_age_ms: now - prevRec.t0,
+      } : null,
+      other_open_pcs: (window.__gsm2TalkPcs || []).filter((p) => p !== pc && p.connectionState !== "closed").length,
     };
     ch.__gsm2DiagRec = rec;
     rec.pc = pc || null;
+    rec.ch = ch;
     all.push(rec);
     while (all.length > 12) all.shift();
     window.__gsm2Diag = rec;
@@ -288,6 +335,14 @@ DIAG_HOOK_JS = r"""
       rec.counts[t] = (rec.counts[t] || 0) + 1;
       if (!(t in rec.first_ms)) rec.first_ms[t] = Date.now() - rec.t0;
       if (!/delta$/.test(t)) { rec.last.push(t); if (rec.last.length > 16) rec.last.shift(); }
+      if (j && (t === "session.created" || t === "session.updated") && rec.payloads.length < 6) {
+        const ms = Date.now() - rec.t0;
+        try { rec.sess.push({t, ms, ...summarize(j.session)}); } catch (e) {}
+        try {
+          const full = JSON.stringify(redact(j, 0));
+          rec.payloads.push({t, ms, json: full.length > 6000 ? full.slice(0, 6000) + "...[trunc]" : full});
+        } catch (e) {}
+      }
       if (j && (t === "error" || /failed|incomplete/.test(t) ||
           (t === "response.done" && j.response && j.response.status && j.response.status !== "completed"))) {
         const err = j.error || (j.response && j.response.status_details) || {};
@@ -296,6 +351,31 @@ DIAG_HOOK_JS = r"""
       }
     });
   };
+  // Client -> OpenAI events (session.update, response.create, ...).
+  if (window.RTCDataChannel && !window.__gsm2DiagSendPatched) {
+    const origSend = window.RTCDataChannel.prototype.send;
+    window.RTCDataChannel.prototype.send = function (data) {
+      try {
+        const rec = this.__gsm2DiagRec;
+        if (rec && typeof data === "string" && rec.sent.length < 40) {
+          let j = null;
+          try { j = JSON.parse(data); } catch (e) {}
+          const t = (j && j.type) || "?";
+          const ent = {t, ms: Date.now() - rec.t0};
+          if (j && /^session\./.test(t)) {
+            try { ent.summary = (window.__gsm2DiagSummarize || (() => null))(j.session); } catch (e) {}
+            try {
+              const full = JSON.stringify((window.__gsm2DiagRedact || ((x) => x))(j, 0));
+              ent.json = full.length > 4000 ? full.slice(0, 4000) + "...[trunc]" : full;
+            } catch (e) {}
+          }
+          rec.sent.push(ent);
+        }
+      } catch (e) {}
+      return origSend.call(this, data);
+    };
+    window.__gsm2DiagSendPatched = true;
+  }
   if (window.RTCPeerConnection && !window.__gsm2DiagPatched) {
     const proto = window.RTCPeerConnection.prototype;
     const origCdc = proto.createDataChannel;
@@ -326,7 +406,9 @@ DIAG_SNAPSHOT_JS = r"""
   };
   if (rec) {
     out.dc = {n: rec.n, age_ms: Date.now() - rec.t0, open_ms: rec.open_ms, close_ms: rec.close_ms,
-              msgs: rec.msgs, counts: rec.counts, first_ms: rec.first_ms, last: rec.last, errors: rec.errors};
+              msgs: rec.msgs, counts: rec.counts, first_ms: rec.first_ms, last: rec.last, errors: rec.errors,
+              prev: rec.prev || null, other_open_pcs: rec.other_open_pcs,
+              sess: rec.sess || [], sent: (rec.sent || []).map((x) => [x.t, x.ms])};
   }
   if (pc) {
     out.pc = {conn: pc.connectionState, ice: pc.iceConnectionState, sig: pc.signalingState,
@@ -354,6 +436,16 @@ DIAG_SNAPSHOT_JS = r"""
     }
   }
   return out;
+})()
+"""
+
+DIAG_PAYLOADS_JS = r"""
+(() => {
+  const rec = window.__gsm2Diag || null;
+  if (!rec) return null;
+  return {n: rec.n, prev: rec.prev || null, other_open_pcs: rec.other_open_pcs,
+          received: rec.payloads || [],
+          sent: (rec.sent || []).filter((x) => x.json || x.summary)};
 })()
 """
 
@@ -944,7 +1036,31 @@ class OpenClawTalkUI:
         except Exception as exc:
             LOG.warning("talk diag %s failed: %s", phase, exc)
             return
+        if isinstance(snap, dict):
+            last_stop = getattr(self, "_diag_last_stop_mono", None)
+            snap["since_prev_stop_s"] = (
+                round(time.monotonic() - last_stop, 2) if last_stop is not None else None
+            )
         LOG.info("talk diag %s: %s", phase, json.dumps(snap, separators=(",", ":"), default=str))
+        if phase.startswith(("mid", "pre-stop")):
+            await self._log_diag_payloads(session, phase)
+
+    async def _log_diag_payloads(self, session: "CdpSession", phase: str) -> None:
+        """Once per Talk session: redacted session.created/updated (+ client session.*)."""
+        try:
+            pl = await session.evaluate(DIAG_PAYLOADS_JS, timeout_s=2.0)
+        except Exception as exc:
+            LOG.warning("talk diag payloads failed: %s", exc)
+            return
+        if not isinstance(pl, dict):
+            return
+        key = (pl.get("n"), len(pl.get("received") or []), len(pl.get("sent") or []))
+        if key == getattr(self, "_diag_payloads_logged", None):
+            return
+        self._diag_payloads_logged = key
+        LOG.info(
+            "talk diag payloads %s: %s", phase, json.dumps(pl, separators=(",", ":"), default=str)
+        )
 
     def _schedule_mid_diag(self) -> None:
         task = getattr(self, "_mid_diag_task", None)
@@ -1018,6 +1134,7 @@ class OpenClawTalkUI:
         try:
             await self._log_diag(session, "pre-stop")
             result = await session.evaluate(CLICK_STOP_JS)
+            self._diag_last_stop_mono = time.monotonic()
             LOG.info("talk stop click: %s", result)
         except Exception as exc:
             LOG.warning("talk stop click failed: %s", exc)
