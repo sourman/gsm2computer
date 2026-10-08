@@ -272,7 +272,7 @@ DIAG_HOOK_JS = r"""
     if (!v || typeof v !== "object") return v;
     const o = {};
     for (const [k, x] of Object.entries(v)) {
-      if (/secret|token|api_?key|authorization|password|bearer/i.test(k)) o[k] = "[redacted]";
+      if (/secret|api_?key|authorization|password|bearer|^token$|_token$/i.test(k)) o[k] = "[redacted]";
       else if (k === "instructions" && typeof x === "string") o[k] = {len: x.length};
       else if (k === "tools" && Array.isArray(x)) o[k] = x.map((t) => (t && (t.name || t.type)) || "?");
       else o[k] = redact(x, depth + 1);
@@ -443,7 +443,7 @@ DIAG_PAYLOADS_JS = r"""
 (() => {
   const rec = window.__gsm2Diag || null;
   if (!rec) return null;
-  return {n: rec.n, prev: rec.prev || null, other_open_pcs: rec.other_open_pcs,
+  return {n: rec.n, t0: rec.t0, prev: rec.prev || null, other_open_pcs: rec.other_open_pcs,
           received: rec.payloads || [],
           sent: (rec.sent || []).filter((x) => x.json || x.summary)};
 })()
@@ -1054,7 +1054,9 @@ class OpenClawTalkUI:
             return
         if not isinstance(pl, dict):
             return
-        key = (pl.get("n"), len(pl.get("received") or []), len(pl.get("sent") or []))
+        key = (
+            pl.get("n"), pl.get("t0"), len(pl.get("received") or []), len(pl.get("sent") or [])
+        )
         if key == getattr(self, "_diag_payloads_logged", None):
             return
         self._diag_payloads_logged = key
