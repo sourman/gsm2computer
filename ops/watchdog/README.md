@@ -14,7 +14,7 @@ live-call rule (`busy` / `real_call_busy` are included in every payload).
 | check | fails when |
 |---|---|
 | `hub_health` | `GET http://100.119.126.42:8787/health` not 200 / `ok != true` (1 quick retry) |
-| `talk_page` | (idle only) Talk Chromium CDP down, no Talk button, or page not on `/chat` |
+| `talk_page` | (idle only) Talk Chromium CDP down, no Talk button, or page not exactly `/chat/main` on the expected origin |
 | `portal_cup` / `hub_cup_portal` | `https://portal-cup…/`, `https://hub-cup…/portal` final status (after redirects) not 200 |
 | `unit:gsm2computer-hub` / `unit:talk-chromium` / `unit:openclaw-gateway` | user unit not `active` (NRestarts tracked; increases logged as `unit_restart` events in the daily summary) |
 | `pixel_ping` | `tailscale ping --tsmp --c 1 --timeout 5s 100.85.191.25` fails 3 tries in a row |

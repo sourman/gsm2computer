@@ -32,6 +32,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.error
 import urllib.request
 import wave
@@ -212,8 +213,17 @@ def check_talk_page(ctx: Ctx):
         problems.append("cdp=false")
     if not page.get("hasTalkButton"):
         problems.append("no Talk button")
-    if "/chat" not in str(page.get("url") or ""):
-        problems.append(f"page url={str(page.get('url'))[:80]!r}")
+    try:
+        actual = urllib.parse.urlsplit(str(page.get("url") or ""))
+        expected = urllib.parse.urlsplit(os.environ.get(
+            "GSM2COMPUTER_TALK_UI_URL", "https://hub-cup.mining-ling.ts.net/chat/main"))
+        correct = (actual.scheme, actual.hostname, actual.port or (443 if actual.scheme == "https" else 80), actual.path) == (
+            expected.scheme, expected.hostname, expected.port or (443 if expected.scheme == "https" else 80), "/chat/main")
+        correct = correct and actual.username is None and actual.password is None
+    except ValueError:
+        correct = False
+    if not correct:
+        problems.append("wrong origin or path (expected /chat/main)")
     if problems:
         return False, "Talk page: " + ", ".join(problems)
     return True, "ok"

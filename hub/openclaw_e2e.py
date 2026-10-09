@@ -543,6 +543,11 @@ async def run_once(step: str = "initial", *, allow_force: bool = False) -> E2ERe
             result.latency_s = time.monotonic() - t0
             return result
 
+        from talk_chromium import page_ready
+        if not page_ready((h0.get("talk") or {}).get("page")):
+            result.error = "Talk page not ready on expected origin /chat/main"
+            result.latency_s = time.monotonic() - t0
+            return result
         pcm = synthesize_prompt_pcm(PROMPT, PCM_RATE)
         chunks = _pcm_chunks(pcm, PCM_RATE)
         token = get_token()
@@ -707,6 +712,7 @@ async def soft_reload_talk() -> None:
     from talk_chromium import get_talk_ui  # type: ignore
 
     ui = get_talk_ui()
+    ui.idle_check = lambda: line_idle(health())
     await ui.reload_control_ui()
     await wait_until_idle(timeout_s=15.0)
 
@@ -738,7 +744,8 @@ async def _systemctl_restart(unit: str) -> None:
             LOG.warning("heal wait stopped: live path after %s restart", unit)
             return
         if unit.startswith("talk-chromium"):
-            if talk.get("cdp") and line_idle(h):
+            from talk_chromium import page_ready
+            if talk.get("cdp") and page_ready(talk.get("page")) and line_idle(h):
                 return
         elif unit.startswith("openclaw-gateway"):
             # gateway: just ensure hub still idle and process active

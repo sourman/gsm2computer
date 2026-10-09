@@ -1500,6 +1500,11 @@ async def handle_websocket(
         await writer.drain()
         return
 
+    # Keep call admission out of the short idle URL repair window.
+    if get_talk_ui is not None and get_talk_ui().page_heal_in_progress:
+        writer.write(b"HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nConnection: close\r\n\r\n")
+        await writer.drain()
+        return
     session_id = "hub-" + uuid.uuid4().hex[:16]
     if not live_call.claim(path):
         LOG.warning("rejecting websocket: call slot raced %s", live_call.snapshot())
@@ -1916,7 +1921,10 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                 body["last_call_tap"] = last_call_tap
             if OPENCLAW_TALK_MODE == "webrtc-ui" and get_talk_ui is not None:
                 try:
-                    body["talk"] = await get_talk_ui().health()
+                    ui = get_talk_ui()
+                    ui.idle_check = lambda: not live_call.busy and active_bridge is None
+                    body["talk"] = await ui.health()
+                    body["call"] = live_call.snapshot()
                 except Exception as exc:
                     body["talk"] = {"error": str(exc)}
             writer.write(json_response(200, body))

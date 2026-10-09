@@ -19,6 +19,7 @@ import socket
 import time
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -34,6 +35,25 @@ _DEFAULT_CONTROL_UI_URL = "https://hub-cup.mining-ling.ts.net/chat/main"
 
 def control_ui_url() -> str:
     return os.environ.get("GSM2COMPUTER_TALK_UI_URL", _DEFAULT_CONTROL_UI_URL) or _DEFAULT_CONTROL_UI_URL
+
+
+def chat_main_url() -> str:
+    expected = urlsplit(control_ui_url())
+    return urlunsplit((expected.scheme, expected.netloc, "/chat/main", "", ""))
+
+
+def on_chat_main(url: Any) -> bool:
+    try:
+        actual, expected = urlsplit(str(url or "")), urlsplit(chat_main_url())
+        return (actual.scheme, actual.hostname, actual.port or (443 if actual.scheme == "https" else 80)) == (
+            expected.scheme, expected.hostname, expected.port or (443 if expected.scheme == "https" else 80)
+        ) and actual.path == "/chat/main" and actual.username is None and actual.password is None
+    except ValueError:
+        return False
+
+
+def page_ready(page: Any) -> bool:
+    return isinstance(page, dict) and on_chat_main(page.get("url")) and bool(page.get("hasTalkButton"))
 
 
 # Back-compat alias for callers that still read the module constant.
@@ -916,6 +936,9 @@ class OpenClawTalkUI:
         self.webrtc_connected = False
         self.talk_started_at: Optional[float] = None
         self.last_state: dict[str, Any] = {}
+        self.idle_check = None  # synchronous hub call-slot guard; unknown blocks healing
+        self.page_heal_in_progress = False
+        self._page_heal_after = 0.0
 
     @property
     def audio_frames(self) -> int:
@@ -947,16 +970,17 @@ class OpenClawTalkUI:
             state = await session.evaluate(PAGE_STATE_JS)
             self.last_state = state if isinstance(state, dict) else {}
             LOG.info(
-                "control ui ready hasTalk=%s live=%s tokenInput=%s",
+                "control ui ready hasTalk=%s onChatMain=%s live=%s tokenInput=%s",
                 self.last_state.get("hasTalkButton"),
+                on_chat_main(self.last_state.get("url")),
                 self.last_state.get("live"),
                 self.last_state.get("hasTokenInput"),
             )
-            if not self.last_state.get("hasTalkButton"):
+            if not page_ready(self.last_state):
                 snippet = (self.last_state.get("snippet") or "")[:240]
                 raise TalkUiError(
-                    "Control UI Talk button not found — profile may need a one-time "
-                    f"DCV login ({snippet!r})"
+                    "Control UI not on /chat/main with Talk button — profile may need a "
+                    f"one-time DCV login ({snippet!r})"
                 )
         finally:
             await session.close()
@@ -1167,7 +1191,7 @@ class OpenClawTalkUI:
         last = None
         while time.monotonic() < deadline:
             last = await session.evaluate(PAGE_STATE_JS)
-            if isinstance(last, dict) and last.get("hasTalkButton"):
+            if page_ready(last):
                 break
             await asyncio.sleep(0.35)
         else:
@@ -1182,27 +1206,31 @@ class OpenClawTalkUI:
         await session.evaluate(HOOK_JS)
 
     async def reload_control_ui(self) -> None:
-        """Soft heal: stop Talk, reload Control UI page, ready for next start_talk."""
+        """Soft heal only while idle; repair URL before accepting readiness."""
+        if not self._idle_for_page_heal():
+            raise TalkUiError("refusing Control UI reload: idle not confirmed")
         if not cdp_available():
             raise TalkUiError("cdp unavailable for control ui reload")
-        session = await self._connect_page()
+        session = await self._connect_page(read_only=True)
         try:
             page = await session.evaluate(PAGE_STATE_JS)
             if live_talk_blocks_reload(page, talk_active=self.talk_active):
                 raise TalkUiError("refusing Control UI reload: Talk is live")
         finally:
             await session.close()
-        await self.stop_talk()
-        session = await self._connect_page()
+        session = await self._connect_page(read_only=True)
         try:
             await self._ensure_control_ui(session)
+            page = await session.evaluate(PAGE_STATE_JS)
+            if not self._idle_for_page_heal() or live_talk_blocks_reload(page):
+                raise TalkUiError("refusing Control UI reload: line became live")
             # Force a fresh document even when already on the chat URL.
             await session.call("Page.reload", {"ignoreCache": True})
             deadline = time.monotonic() + PAGE_TIMEOUT_S
             last = None
             while time.monotonic() < deadline:
                 last = await session.evaluate(PAGE_STATE_JS)
-                if isinstance(last, dict) and last.get("hasTalkButton"):
+                if page_ready(last):
                     break
                 await asyncio.sleep(0.35)
             else:
@@ -1278,12 +1306,41 @@ class OpenClawTalkUI:
         return info
 
     async def _health_page_probe(self) -> dict[str, Any]:
-        session = await self._connect_page()
+        session = await self._connect_page(read_only=True)
         try:
             page = await session.evaluate(PAGE_STATE_JS)
-            return page if isinstance(page, dict) else {"raw": page}
+            page = page if isinstance(page, dict) else {"raw": page}
+            page["onChatMain"] = on_chat_main(page.get("url"))
+            page["reason"] = "ok" if page_ready(page) else (
+                "missing Talk button" if page["onChatMain"] else "wrong origin or path; expected /chat/main")
+            if not page["onChatMain"]:
+                page["heal"] = await self._heal_page_url(session, page)
+            return page
         finally:
             await session.close()
+
+    def _idle_for_page_heal(self) -> bool:
+        return not self.talk_active and self.idle_check is not None and self.idle_check() is True
+
+    async def _heal_page_url(self, session: CdpSession, page: dict) -> str:
+        if not self._idle_for_page_heal() or live_talk_blocks_reload(page):
+            return "blocked: call busy, Talk live, or idle unknown"
+        if self.page_heal_in_progress or time.monotonic() < self._page_heal_after:
+            return "backoff"
+        self.page_heal_in_progress = True
+        try:
+            fresh = await session.evaluate(PAGE_STATE_JS)
+            if not isinstance(fresh, dict) or not self._idle_for_page_heal() or live_talk_blocks_reload(fresh):
+                return "blocked: became live or page unknown"
+            if on_chat_main(fresh.get("url")):
+                return "already corrected"
+            # Arm cooldown only when we actually attempt navigation (incl. CDP failures).
+            self._page_heal_after = time.monotonic() + 120.0
+            LOG.warning("Talk page URL heal: navigating to /chat/main (idle; cooldown 120s)")
+            await session.call("Page.navigate", {"url": chat_main_url()})
+            return "navigation requested"
+        finally:
+            self.page_heal_in_progress = False
 
     async def ensure_browser(self) -> None:
         if cdp_available() and browser_pid() is not None:
@@ -1341,7 +1398,7 @@ class OpenClawTalkUI:
         except Exception:
             return
 
-    async def _connect_page(self) -> CdpSession:
+    async def _connect_page(self, *, read_only: bool = False) -> CdpSession:
         try:
             import websockets
         except ImportError as exc:
@@ -1352,10 +1409,7 @@ class OpenClawTalkUI:
             raise TalkUiError(f"cdp list failed: {exc}") from exc
 
         def _is_chat(url: str) -> bool:
-            u = (url or "").lower()
-            return (
-                "hub-cup.mining-ling.ts.net" in u or "/chat/" in u
-            ) and not u.startswith(("devtools://", "chrome://", "about:blank"))
+            return on_chat_main(url)
 
         pages = [
             tg
@@ -1390,7 +1444,7 @@ class OpenClawTalkUI:
                     )
                     await session.close()
                     session = None
-                    tid = target.get("id")
+                    tid = None if read_only else target.get("id")
                     if tid:
                         try:
                             _cdp_http(f"/json/close/{tid}", timeout_s=2.0)
@@ -1411,6 +1465,8 @@ class OpenClawTalkUI:
                     except Exception:
                         pass
 
+        if read_only:
+            raise TalkUiError("no responsive CDP page (read-only probe)")
         from urllib.parse import quote, urlencode
 
         try:
@@ -1444,17 +1500,21 @@ class OpenClawTalkUI:
 
     async def _ensure_control_ui(self, session: CdpSession) -> None:
         state = await session.evaluate(PAGE_STATE_JS)
-        if isinstance(state, dict) and state.get("hasTalkButton"):
+        if page_ready(state):
             return
-        url = control_ui_url_with_token()
-        LOG.info("navigating talk chromium to Control UI %s", control_ui_url())
-        await session.call("Page.navigate", {"url": url})
+        if not on_chat_main((state if isinstance(state, dict) else {}).get("url")):
+            result = await self._heal_page_url(session, state if isinstance(state, dict) else {})
+            if result not in ("navigation requested", "already corrected"):
+                raise TalkUiError(f"wrong Talk page: {result}")
+        # Correct URL with a temporarily missing button: wait for rendering,
+        # never treat a dashboard button as readiness.
+
         deadline = time.monotonic() + PAGE_TIMEOUT_S
         last = state if isinstance(state, dict) else {}
         while time.monotonic() < deadline:
             await asyncio.sleep(0.4)
             last = await session.evaluate(PAGE_STATE_JS, timeout_s=3.0)
-            if isinstance(last, dict) and last.get("hasTalkButton"):
+            if page_ready(last):
                 return
             snippet = str((last or {}).get("snippet") or "").lower()
             if "device pairing required" in snippet or "approve this browser" in snippet:
