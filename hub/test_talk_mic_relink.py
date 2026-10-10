@@ -12,6 +12,7 @@ from talk_chromium import (
     live_talk_blocks_reload,
     loopback_capture_linked,
     relink_openclaw_phone_mic,
+    talk_page_session_healthy,
 )
 
 
@@ -71,6 +72,58 @@ class LiveTalkReloadGuardTests(unittest.TestCase):
 
     def test_talk_active_flag_blocks_even_without_page(self) -> None:
         self.assertTrue(live_talk_blocks_reload(None, talk_active=True))
+
+
+class TalkPageSessionHealthyTests(unittest.TestCase):
+    """Safwat 2026-10-10: false 'talk unhealthy' abort with PC/DC still up."""
+
+    def test_connected_pc_healthy_without_dom_live(self) -> None:
+        # Shape at 21:39Z abort: live CSS gone, newest PC+ICE connected.
+        state = {
+            "live": False,
+            "dcState": "open",
+            "pcs": (
+                [{"connection": "closed", "ice": "closed"}] * 60
+                + [{"connection": "connected", "ice": "connected"}]
+            ),
+        }
+        self.assertTrue(talk_page_session_healthy(state))
+
+    def test_connecting_pc_with_ice_connected_is_healthy(self) -> None:
+        state = {
+            "live": False,
+            "pcs": [{"connection": "connecting", "ice": "connected"}],
+        }
+        self.assertTrue(talk_page_session_healthy(state))
+
+    def test_closed_dc_with_zombie_pc_is_unhealthy(self) -> None:
+        state = {
+            "live": False,
+            "dcState": "closed",
+            "pcs": [{"connection": "connected", "ice": "connected"}],
+        }
+        self.assertFalse(talk_page_session_healthy(state))
+
+    def test_newest_pc_closed_ignores_older_connected(self) -> None:
+        state = {
+            "live": False,
+            "dcState": "open",
+            "pcs": [
+                {"connection": "connected", "ice": "connected"},
+                {"connection": "closed", "ice": "closed"},
+            ],
+        }
+        self.assertFalse(talk_page_session_healthy(state))
+
+    def test_dom_live_without_pcs_is_healthy(self) -> None:
+        self.assertTrue(talk_page_session_healthy({"live": True, "pcs": []}))
+
+    def test_idle_no_transport_is_unhealthy(self) -> None:
+        self.assertFalse(
+            talk_page_session_healthy(
+                {"live": False, "pcs": [], "dcState": None, "hasTalkButton": True}
+            )
+        )
 
 
 class DisruptiveHealGuardTests(unittest.TestCase):

@@ -210,6 +210,7 @@ PAGE_STATE_JS = r"""
   const body = (document.body && document.body.innerText || "").slice(0, 800);
   const composer = document.querySelector(".agent-chat__input textarea, textarea");
   const composerVal = composer && "value" in composer ? String(composer.value || "") : "";
+  const dc = window.__gsm2Dc;
   return {
     url: location.href,
     title: document.title,
@@ -221,6 +222,7 @@ PAGE_STATE_JS = r"""
     hasTokenInput: !!tokenInput,
     statusText: status ? status.textContent.trim() : null,
     composerLen: composerVal.length,
+    dcState: dc ? dc.readyState : null,
     pcs: pcs.map((pc) => ({
       connection: pc.connectionState,
       ice: pc.iceConnectionState,
@@ -812,6 +814,58 @@ def live_talk_blocks_reload(page_state: Any, *, talk_active: bool = False) -> bo
     return False
 
 
+def talk_page_session_healthy(page_state: Any) -> bool:
+    """True when Control UI has a usable WebRTC Talk transport.
+
+    Prefer PeerConnection/ICE (and open datachannel when reported) over DOM
+    "live" chrome. OpenClaw's chat UI has stopped reliably exposing
+    ``.chat-talk-control--active`` / ``button.chat-send-btn--voice-live``
+    while the realtime PC stays connected — that made
+    ``talk_session_healthy`` return False and the hub's 45s watchdog abort
+    healthy GSM calls at ~105s established (grace 60s + unhealthy 45s).
+
+    Only the newest tracked PC counts; older closed/zombie entries from prior
+    calls must not keep the session looking healthy after a new PC dies.
+    """
+    if not isinstance(page_state, dict):
+        return False
+    pcs = page_state.get("pcs") or []
+    dc_state = page_state.get("dcState") or page_state.get("dc_state")
+    newest: Optional[dict] = None
+    for pc in reversed(list(pcs)):
+        if isinstance(pc, dict):
+            newest = pc
+            break
+    if newest is not None:
+        conn = newest.get("connection")
+        ice = newest.get("ice")
+        ice_ok = ice in ("connected", "completed")
+        transport_up = (
+            (conn in ("connected", "completed") and ice_ok)
+            # Observed on cup: connectionState can linger in "connecting"
+            # after ICE is already connected.
+            or (conn == "connecting" and ice_ok)
+        )
+        if transport_up and dc_state not in ("closed", "closing"):
+            return True
+        if conn in ("failed", "closed", "disconnected"):
+            return False
+        if ice in ("failed", "closed", "disconnected"):
+            return False
+    # Legacy DOM live marker during early setup (PC not registered yet).
+    if page_state.get("live"):
+        if not pcs:
+            return True
+        if newest is not None and newest.get("connection") in (
+            "new",
+            "connecting",
+            "connected",
+            "completed",
+        ):
+            return True
+    return False
+
+
 def _pw_port_match(ports: list[str], *needles: str) -> list[str]:
     lowered = [(p, p.lower()) for p in ports]
     return [p for p, low in lowered if all(n.lower() in low for n in needles)]
@@ -1113,7 +1167,7 @@ class OpenClawTalkUI:
             self._mid_diag_task = None
 
     async def talk_session_healthy(self) -> Optional[bool]:
-        """Return whether Talk UI is live and has a connected WebRTC peer (None if CDP unavailable)."""
+        """Return whether Talk has a connected WebRTC transport (None if CDP unavailable)."""
         if not cdp_available():
             return None
         try:
@@ -1124,19 +1178,7 @@ class OpenClawTalkUI:
             state = await session.evaluate(PAGE_STATE_JS)
             if not isinstance(state, dict):
                 return None
-            if not state.get("live"):
-                return False
-            pcs = state.get("pcs") or []
-            if not pcs:
-                return False
-            for pc in pcs:
-                if not isinstance(pc, dict):
-                    continue
-                conn = pc.get("connection")
-                ice = pc.get("ice")
-                if conn == "connected" and ice in ("connected", "completed"):
-                    return True
-            return False
+            return talk_page_session_healthy(state)
         except Exception:
             return None
         finally:
